@@ -67,6 +67,11 @@ We finally scale this signal and center it to the range
 ### Denoising
 To denoise the ouput audio file we get from visualmic.py, we apply image based morphological filtering to the audio spectrograms, and then reconstruct audio from the processed spectrogram. Denoising had a lot of steps, so I've made it into a different project. Here is the link to the project https://github.com/joeljose/audio_denoising
 
+## Follow Me
+<a href="https://twitter.com/joelk1jose" target="_blank"><img class="ai-subscribed-social-icon" src="https://github.com/joeljose/assets/blob/master/images/tw.png" width="30"></a>
+<a href="https://github.com/joeljose" target="_blank"><img class="ai-subscribed-social-icon" src="https://github.com/joeljose/assets/blob/master/images/gthb.png" width="30"></a>
+<a href="https://www.linkedin.com/in/joel-jose-527b80102/" target="_blank"><img class="ai-subscribed-social-icon" src="https://github.com/joeljose/assets/blob/master/images/lnkdn.png" width="30"></a>
 
+<h3 align="center">Show your support by starring the repository 🙂</h3>
 
 
