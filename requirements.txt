@@ -1,4 +1,7 @@
-opencv-contrib-python==4.5.3.56
-scipy==1.5.0
-dtcwt==0.12.0
-numpy==1.18.5
+#!/bin/bash
+pip install scipy==1.7.1 
+pip install numpy==1.20.3 
+pip install dtcwt==0.12.0 
+pip install opencv-python==4.7.0.72
+pip install librosa==0.10.0.post2
+pip install soundfile==0.12.1
