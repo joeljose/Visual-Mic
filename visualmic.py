@@ -19,7 +19,7 @@ def npTowav(np_file, output_name, sps):
 		write(output_name, sps, waveform_integers)
 		print(f"Output saved to {output_name}")
 
-def soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level):
+def soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,freq_low=None,freq_high=None):
 
 	tr = dtcwt.Transform2d()
 	ref_frame = None
@@ -63,6 +63,37 @@ def soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level):
 	frameCount = len(data)
 	data = np.array(data)
 	print(f"Transform complete: {frameCount} frames processed")
+
+	# Temporal bandpass filtering
+	nyquist = fps / 2.0
+	apply_filter = (freq_low is not None or freq_high is not None) and frameCount > 12
+
+	if apply_filter:
+		if freq_low is not None and freq_high is not None:
+			if freq_low >= nyquist:
+				print(f"Warning: freq_low ({freq_low} Hz) >= Nyquist ({nyquist} Hz), skipping filter")
+				apply_filter = False
+			else:
+				freq_high_clamped = min(freq_high, nyquist * 0.99)
+				sos = signal.butter(4, [freq_low / nyquist, freq_high_clamped / nyquist], btype='bandpass', output='sos')
+				print(f"Applying bandpass filter: {freq_low}–{freq_high_clamped:.0f} Hz")
+		elif freq_low is not None:
+			if freq_low >= nyquist:
+				print(f"Warning: freq_low ({freq_low} Hz) >= Nyquist ({nyquist} Hz), skipping filter")
+				apply_filter = False
+			else:
+				sos = signal.butter(4, freq_low / nyquist, btype='highpass', output='sos')
+				print(f"Applying highpass filter: {freq_low} Hz")
+		else:
+			freq_high_clamped = min(freq_high, nyquist * 0.99)
+			sos = signal.butter(4, freq_high_clamped / nyquist, btype='lowpass', output='sos')
+			print(f"Applying lowpass filter: {freq_high_clamped:.0f} Hz")
+
+	if apply_filter:
+		for i in range(nlevels):
+			for j in range(orient):
+				data[:,i,j] = signal.sosfiltfilt(sos, data[:,i,j])
+
 	shift_matrix=np.zeros((nlevels,orient))
 	ref_vector=data[:,ref_level,ref_orient].reshape(-1)
 	for i in range(nlevels):
@@ -92,11 +123,15 @@ def main():
 	# Add arguments
 	parser.add_argument('-i', '--input', required=True, help='Specify input video path')
 	parser.add_argument('-o', '--output', default='sound.wav', help='Specify output audio path (default: sound.wav)')
+	parser.add_argument('-fl', '--freq-low', type=float, default=None, help='Lower cutoff frequency in Hz for temporal bandpass filter')
+	parser.add_argument('-fh', '--freq-high', type=float, default=None, help='Upper cutoff frequency in Hz for temporal bandpass filter')
 
 	# Parse the command-line arguments
 	args = parser.parse_args()
 	filename = args.input
 	output_name = args.output
+	freq_low = args.freq_low
+	freq_high = args.freq_high
 
 	if not os.path.isfile(filename):
 		print(f"Error: file '{filename}' not found")
@@ -129,7 +164,7 @@ def main():
 	ref_level=0
 	ref_orient=0
 
-	npTowav(soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level), output_name, int(fps))
+	npTowav(soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,freq_low,freq_high), output_name, int(fps))
 
 
 if __name__ == "__main__":

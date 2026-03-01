@@ -54,11 +54,16 @@ You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l
    ```sh
    python visualmic.py -i <input_video>
    python visualmic.py -i testvid.avi -o recovered_audio.wav
+   python visualmic.py -i testvid.avi -fl 80 -fh 1000
    ```
    | Argument | Required | Description |
    |----------|----------|-------------|
    | `-i`, `--input` | Yes | Path to input video file |
    | `-o`, `--output` | No | Output audio path (default: `sound.wav`) |
+   | `-fl`, `--freq-low` | No | Lower cutoff frequency in Hz for temporal bandpass filter |
+   | `-fh`, `--freq-high` | No | Upper cutoff frequency in Hz for temporal bandpass filter |
+
+   When `-fl` and/or `-fh` are specified, a Butterworth filter is applied to the phase signals before audio reconstruction, rejecting low-frequency drift and high-frequency noise to improve output quality.
 
 ---
 
@@ -356,7 +361,26 @@ Phase wrapping ensures the difference always reflects the true small angular dis
 
 **Result:** `data[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
 
-### Step 4: Temporal Alignment via Cross-Correlation (lines 66–70)
+### Step 3.5: Temporal Bandpass Filtering (lines 67–95, optional)
+
+When `-fl` and/or `-fh` are specified, a 4th-order Butterworth filter is applied to each of the 18 phase signals before cross-correlation:
+
+```python
+nyquist = fps / 2.0
+sos = signal.butter(4, [freq_low / nyquist, freq_high_clamped / nyquist],
+                    btype='bandpass', output='sos')
+for i in range(nlevels):
+    for j in range(orient):
+        data[:,i,j] = signal.sosfiltfilt(sos, data[:,i,j])
+```
+
+- `sosfiltfilt` applies the filter forward and backward (zero-phase), so no time delay is introduced
+- The filter rejects low-frequency drift (camera shake, thermal effects) and high-frequency noise
+- Upper cutoff is automatically clamped to 99% of Nyquist to avoid instability
+- Skipped if video has fewer than 13 frames (minimum required for `filtfilt`)
+- If only `-fl` is given, acts as highpass; if only `-fh`, acts as lowpass
+
+### Step 4: Temporal Alignment via Cross-Correlation (lines 97–101)
 
 ```python
 ref_vector = data[:, ref_level, ref_orient].reshape(-1)
@@ -373,7 +397,7 @@ def maxTime(a, b):
     return np.argmax(c) - (len(b) - 1)
 ```
 
-### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 72–76)
+### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 103–107)
 
 ```python
 for fc in range(frameCount):
@@ -382,7 +406,7 @@ for fc in range(frameCount):
             sound_raw[fc] += data[fc - int(shift_matrix[i,j]), i, j]
 ```
 
-### Step 6: Normalize to $[-1, 1]$ (lines 77–83)
+### Step 6: Normalize to $[-1, 1]$ (lines 108–114)
 
 ```python
 p_min = np.min(sound_raw)
@@ -395,7 +419,7 @@ else:
 
 Includes a guard against division by zero when no motion is detected.
 
-### Step 7: Output WAV (lines 14–20, called at line 132)
+### Step 7: Output WAV (lines 14–20, called at line 167)
 
 ```python
 def npTowav(np_file, output_name, sps):
