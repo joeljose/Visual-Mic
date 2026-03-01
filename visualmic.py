@@ -1,11 +1,26 @@
 import argparse
 import os
 import sys
-import dtcwt
+import time
 from scipy import signal
+from scipy import ndimage
 import numpy as np
 import cv2
+from scipy.io.wavfile import read as read_wav
 from scipy.io.wavfile import write
+
+
+def format_duration(seconds):
+	seconds = int(seconds)
+	if seconds < 60:
+		return f"{seconds}s"
+	elif seconds < 3600:
+		return f"{seconds // 60}m {seconds % 60}s"
+	else:
+		h = seconds // 3600
+		m = (seconds % 3600) // 60
+		s = seconds % 60
+		return f"{h}h {m}m {s}s"
 
 
 def find_best_shift(a, b):
@@ -19,52 +34,59 @@ def save_wav(samples, output_name, sample_rate):
 	print(f"Output saved to {output_name}")
 
 
-def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None):
-	transform = dtcwt.Transform2d()
-	ref_conj = None
-	phase_signals = []
-	progress_interval = max(1, frame_count // 10)
+def denoise_spectral(samples, fs, noise_duration=0.1):
+	f, t, Zxx = signal.stft(samples, fs=fs, nperseg=512)
+	magnitude = np.abs(Zxx)
+	phase = np.angle(Zxx)
 
-	for fc in range(frame_count):
-		ret, raw_frame = cap.read()
-		if not ret or raw_frame is None:
-			print(f"Warning: could not read frame {fc}, stopping at {len(phase_signals)} frames")
-			break
-		gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
-		if roi is not None:
-			rx, ry, rw, rh = roi
-			gray = gray[ry:ry+rh, rx:rx+rw]
+	# Estimate noise from first noise_duration seconds
+	noise_frames = max(1, int(noise_duration * fs / (512 // 4)))
+	noise_profile = np.mean(magnitude[:, :noise_frames], axis=1, keepdims=True)
 
-		dtcwt_frame = transform.forward(gray, nlevels=nlevels)
+	# Subtract noise, floor at zero
+	clean_mag = np.maximum(magnitude - noise_profile, 0.0)
 
-		if fc == ref_index:
-			ref_conj = [np.conj(dtcwt_frame.highpasses[level]) for level in range(nlevels)]
+	# Reconstruct with original phase
+	clean_Zxx = clean_mag * np.exp(1j * phase)
+	_, reconstructed = signal.istft(clean_Zxx, fs=fs, nperseg=512)
 
-		if ref_conj is None:
-			phase_signals.append(np.zeros((nlevels, n_orient)))
-			continue
+	# Normalize to [-1, 1]
+	peak = np.max(np.abs(reconstructed))
+	if peak > 0:
+		reconstructed = reconstructed / peak
+	return reconstructed
 
-		frame_phases = np.zeros((nlevels, n_orient))
-		for level in range(nlevels):
-			coeffs = dtcwt_frame.highpasses[level]
-			amp = np.abs(coeffs)
-			phase_diff = np.angle(coeffs * ref_conj[level])
-			frame_phases[level, :] = np.sum(amp * amp * phase_diff, axis=(0, 1))
-		phase_signals.append(frame_phases)
 
-		if (fc + 1) % progress_interval == 0 or fc == frame_count - 1:
-			print(f"Processing: {fc + 1}/{frame_count} frames ({100 * (fc + 1) // frame_count}%)")
+def denoise_morphological(samples, fs, threshold=20, amp=10):
+	f, t, Zxx = signal.stft(samples, fs=fs, nperseg=512)
+	magnitude = np.abs(Zxx)
 
-	cap.release()
+	# Convert to grayscale (0-255)
+	mag_max = np.max(magnitude)
+	if mag_max == 0:
+		return samples
+	gray = magnitude * (255.0 / mag_max)
 
-	if len(phase_signals) == 0:
-		print("Error: no frames could be read from video")
-		sys.exit(1)
+	# Binary threshold
+	mask = gray >= threshold
 
-	frame_count = len(phase_signals)
-	phase_signals = np.array(phase_signals)
-	print(f"Transform complete: {frame_count} frames processed")
+	# Morphological erosion then dilation
+	mask = ndimage.binary_erosion(mask, iterations=1)
+	mask = ndimage.binary_dilation(mask, iterations=2)
 
+	# Apply mask: amplify signal, attenuate noise
+	masked_Zxx = np.where(mask, Zxx * amp, Zxx / amp)
+
+	_, reconstructed = signal.istft(masked_Zxx, fs=fs, nperseg=512)
+
+	# Normalize to [-1, 1]
+	peak = np.max(np.abs(reconstructed))
+	if peak > 0:
+		reconstructed = reconstructed / peak
+	return reconstructed
+
+
+def postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref_level, ref_orient, fps, freq_low=None, freq_high=None):
 	# Temporal bandpass filtering
 	nyquist = fps / 2.0
 	apply_filter = (freq_low is not None or freq_high is not None) and frame_count > 12
@@ -117,17 +139,211 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, re
 	return sound_data
 
 
+def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None):
+	import dtcwt
+	transform = dtcwt.Transform2d()
+	ref_conj = None
+	phase_signals = []
+	progress_interval = max(1, frame_count // 10)
+	start_time = time.time()
+
+	for fc in range(frame_count):
+		ret, raw_frame = cap.read()
+		if not ret or raw_frame is None:
+			print(f"Warning: could not read frame {fc}, stopping at {len(phase_signals)} frames")
+			break
+		gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
+		if roi is not None:
+			rx, ry, rw, rh = roi
+			gray = gray[ry:ry+rh, rx:rx+rw]
+
+		dtcwt_frame = transform.forward(gray, nlevels=nlevels)
+
+		if fc == ref_index:
+			ref_conj = [np.conj(dtcwt_frame.highpasses[level]) for level in range(nlevels)]
+
+		if ref_conj is None:
+			phase_signals.append(np.zeros((nlevels, n_orient)))
+			continue
+
+		frame_phases = np.zeros((nlevels, n_orient))
+		for level in range(nlevels):
+			coeffs = dtcwt_frame.highpasses[level]
+			amp = np.abs(coeffs)
+			phase_diff = np.angle(coeffs * ref_conj[level])
+			frame_phases[level, :] = np.sum(amp * amp * phase_diff, axis=(0, 1))
+		phase_signals.append(frame_phases)
+
+		if (fc + 1) % progress_interval == 0 or fc == frame_count - 1:
+			elapsed = time.time() - start_time
+			rate = (fc + 1) / elapsed if elapsed > 0 else 0
+			remaining = (frame_count - fc - 1) / rate if rate > 0 else 0
+			print(f"Processing: {fc + 1}/{frame_count} frames ({100 * (fc + 1) // frame_count}%) | Elapsed: {format_duration(elapsed)} | ETA: {format_duration(remaining)}")
+
+	cap.release()
+
+	if len(phase_signals) == 0:
+		print("Error: no frames could be read from video")
+		sys.exit(1)
+
+	frame_count = len(phase_signals)
+	phase_signals = np.array(phase_signals)
+	elapsed = time.time() - start_time
+	print(f"Transform complete: {frame_count} frames in {format_duration(elapsed)}")
+
+	return postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref_level, ref_orient, fps, freq_low, freq_high)
+
+
+def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None, batch_size=16):
+	import torch
+	from pytorch_wavelets import DTCWTForward
+
+	device = torch.device('cuda')
+	xfm = DTCWTForward(J=nlevels, biort='near_sym_b', qshift='qshift_b').to(device)
+	print(f"GPU mode: {torch.cuda.get_device_name(0)}, batch_size={batch_size}")
+
+	ref_coeffs = None
+	phase_signals = []
+	progress_interval = max(1, frame_count // 10)
+	frames_read = 0
+	last_report = 0
+	start_time = time.time()
+
+	batch_frames = []
+
+	for fc in range(frame_count):
+		ret, raw_frame = cap.read()
+		if not ret or raw_frame is None:
+			print(f"Warning: could not read frame {fc}, stopping at {frames_read} frames")
+			break
+		gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
+		if roi is not None:
+			rx, ry, rw, rh = roi
+			gray = gray[ry:ry+rh, rx:rx+rw]
+
+		batch_frames.append(gray.astype(np.float32))
+		frames_read += 1
+
+		if len(batch_frames) == batch_size or fc == frame_count - 1:
+			n_in_batch = len(batch_frames)
+			batch_start_fc = fc - n_in_batch + 1
+
+			batch_np = np.stack(batch_frames)[:, np.newaxis, :, :]
+			try:
+				batch_tensor = torch.from_numpy(batch_np).to(device)
+				Yl, Yh = xfm(batch_tensor)
+			except RuntimeError as e:
+				if 'out of memory' in str(e).lower():
+					print(f"Error: GPU out of memory with batch_size={batch_size}. Try a smaller --batch-size.")
+					cap.release()
+					sys.exit(1)
+				raise
+
+			# Extract reference coefficients if reference frame is in this batch
+			if ref_coeffs is None and ref_index >= batch_start_fc and ref_index <= fc:
+				ref_pos = ref_index - batch_start_fc
+				ref_coeffs = [Yh[level][ref_pos:ref_pos+1].clone() for level in range(nlevels)]
+
+			if ref_coeffs is None:
+				# Haven't seen reference frame yet
+				for _ in range(n_in_batch):
+					phase_signals.append(np.zeros((nlevels, n_orient)))
+			else:
+				batch_phases = np.zeros((n_in_batch, nlevels, n_orient))
+				for level in range(nlevels):
+					# Yh[level] shape: (N, 1, 6, H, W, 2), last dim is real/imag
+					hp = Yh[level]
+					ref_hp = ref_coeffs[level]
+
+					c_real = hp[..., 0]
+					c_imag = hp[..., 1]
+					r_real = ref_hp[..., 0]
+					r_imag = ref_hp[..., 1]
+
+					# Conjugate multiply: (c + id)(a - ib) = (ca+db) + i(da-cb)
+					prod_real = c_real * r_real + c_imag * r_imag
+					prod_imag = c_imag * r_real - c_real * r_imag
+
+					phase_diff = torch.atan2(prod_imag, prod_real)
+					amp_sq = c_real * c_real + c_imag * c_imag
+
+					# Sum over spatial dims (H, W) -> (N, 1, 6)
+					weighted = (amp_sq * phase_diff).sum(dim=(-2, -1))
+					batch_phases[:, level, :] = weighted[:, 0, :].cpu().numpy()
+
+				for i in range(n_in_batch):
+					if batch_start_fc + i < ref_index:
+						phase_signals.append(np.zeros((nlevels, n_orient)))
+					else:
+						phase_signals.append(batch_phases[i])
+
+			del batch_tensor, Yl, Yh
+			batch_frames = []
+
+			if frames_read >= last_report + progress_interval or fc == frame_count - 1:
+				elapsed = time.time() - start_time
+				rate = frames_read / elapsed if elapsed > 0 else 0
+				remaining = (frame_count - frames_read) / rate if rate > 0 else 0
+				print(f"Processing: {frames_read}/{frame_count} frames ({100 * frames_read // frame_count}%) | Elapsed: {format_duration(elapsed)} | ETA: {format_duration(remaining)}")
+				last_report = frames_read
+
+	cap.release()
+
+	if len(phase_signals) == 0:
+		print("Error: no frames could be read from video")
+		sys.exit(1)
+
+	frame_count = len(phase_signals)
+	phase_signals = np.array(phase_signals)
+	elapsed = time.time() - start_time
+	print(f"Transform complete: {frame_count} frames in {format_duration(elapsed)}")
+
+	return postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref_level, ref_orient, fps, freq_low, freq_high)
+
+
 def main():
 	parser = argparse.ArgumentParser(description='Visual Microphone: Recover sound from video using 2D DTCWT')
 
-	parser.add_argument('-i', '--input', required=True, help='Specify input video path')
+	parser.add_argument('-i', '--input', default=None, help='Specify input video path')
 	parser.add_argument('-o', '--output', default='sound.wav', help='Specify output audio path (default: sound.wav)')
 	parser.add_argument('-fl', '--freq-low', type=float, default=None, help='Lower cutoff frequency in Hz for temporal bandpass filter')
 	parser.add_argument('-fh', '--freq-high', type=float, default=None, help='Upper cutoff frequency in Hz for temporal bandpass filter')
 	parser.add_argument('--fps', type=float, default=None, help='Override video frame rate (Hz) for audio output sample rate')
 	parser.add_argument('--roi', type=str, default=None, help='Region of interest as x,y,w,h (e.g. --roi 100,50,200,150)')
+	parser.add_argument('--gpu', action='store_true', help='Use GPU-accelerated DTCWT (requires CUDA and pytorch_wavelets)')
+	parser.add_argument('--batch-size', type=int, default=16, help='Frames per GPU batch (default: 16, GPU mode only)')
+	parser.add_argument('--denoise', choices=['spectral', 'morphological'], default=None, help='Audio denoising method (applied after reconstruction)')
+	parser.add_argument('--denoise-input', type=str, default=None, help='Denoise an existing WAV file instead of processing video')
 
 	args = parser.parse_args()
+	pipeline_start = time.time()
+
+	# Standalone denoise mode
+	if args.denoise_input is not None:
+		if args.denoise is None:
+			print("Error: --denoise-input requires --denoise {spectral,morphological}")
+			sys.exit(1)
+		if not os.path.isfile(args.denoise_input):
+			print(f"Error: file '{args.denoise_input}' not found")
+			sys.exit(1)
+		sr, wav_data = read_wav(args.denoise_input)
+		samples = wav_data.astype(np.float64) / 32767.0
+		print(f"Loaded {args.denoise_input}: {len(samples)} samples, {sr} Hz, {len(samples)/sr:.2f}s")
+		print(f"Applying {args.denoise} denoising...")
+		if args.denoise == 'spectral':
+			samples = denoise_spectral(samples, sr)
+		else:
+			samples = denoise_morphological(samples, sr)
+		print("Denoising complete")
+		save_wav(samples, args.output, sr)
+		print(f"Total time: {format_duration(time.time() - pipeline_start)}")
+		return
+
+	# Full pipeline mode — require -i
+	if args.input is None:
+		print("Error: -i/--input is required (or use --denoise-input for standalone denoising)")
+		sys.exit(1)
+
 	filename = args.input
 	output_name = args.output
 	freq_low = args.freq_low
@@ -144,6 +360,27 @@ def main():
 			roi = tuple(parts)
 		except ValueError:
 			print("Error: --roi must be four integers: x,y,w,h (e.g. --roi 100,50,200,150)")
+			sys.exit(1)
+
+	if args.gpu:
+		try:
+			import torch
+			if not torch.cuda.is_available():
+				print("Error: --gpu requires CUDA but no GPU is available")
+				sys.exit(1)
+		except ImportError:
+			print("Error: --gpu requires PyTorch (pip install torch)")
+			sys.exit(1)
+		try:
+			import pytorch_wavelets
+		except ImportError:
+			print("Error: --gpu requires pytorch_wavelets (pip install git+https://github.com/fbcotter/pytorch_wavelets.git)")
+			sys.exit(1)
+	else:
+		try:
+			import dtcwt
+		except ImportError:
+			print("Error: CPU mode requires dtcwt (pip install dtcwt)")
 			sys.exit(1)
 
 	if not os.path.isfile(filename):
@@ -203,11 +440,21 @@ def main():
 	ref_level = 0
 	ref_orient = 0
 
-	save_wav(
-		extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi),
-		output_name,
-		int(fps)
-	)
+	if args.gpu:
+		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi, args.batch_size)
+	else:
+		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi)
+
+	if args.denoise:
+		print(f"Applying {args.denoise} denoising...")
+		if args.denoise == 'spectral':
+			sound_data = denoise_spectral(sound_data, int(fps))
+		else:
+			sound_data = denoise_morphological(sound_data, int(fps))
+		print("Denoising complete")
+
+	save_wav(sound_data, output_name, int(fps))
+	print(f"Total time: {format_duration(time.time() - pipeline_start)}")
 
 
 if __name__ == "__main__":

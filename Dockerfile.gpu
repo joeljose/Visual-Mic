@@ -1,0 +1,24 @@
+FROM pytorch/pytorch:1.12.1-cuda11.3-cudnn8-runtime
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 git && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG UID
+ARG GID
+ARG UNAME
+
+RUN groupadd -g ${GID} ${UNAME} && \
+    useradd -m -u ${UID} -g ${GID} ${UNAME}
+
+WORKDIR /app
+
+COPY requirements-gpu.txt .
+RUN pip install --no-cache-dir -r requirements-gpu.txt && \
+    pip install --no-cache-dir git+https://github.com/fbcotter/pytorch_wavelets.git
+
+COPY visualmic.py .
+
+USER ${UNAME}
+
+ENTRYPOINT ["python", "-u", "visualmic.py"]

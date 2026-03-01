@@ -67,6 +67,10 @@ You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l
    | `-fh`, `--freq-high` | No | Upper cutoff frequency in Hz for temporal bandpass filter |
    | `--fps` | No | Override the video frame rate (Hz) for audio output sample rate |
    | `--roi` | No | Region of interest as `x,y,w,h` — crops each frame before processing |
+   | `--gpu` | No | Use GPU-accelerated DTCWT (requires CUDA and `pytorch_wavelets`) |
+   | `--batch-size` | No | Frames per GPU batch (default: 16, GPU mode only) |
+   | `--denoise` | No | Audio denoising: `spectral` (spectral subtraction) or `morphological` (spectrogram morphology) |
+   | `--denoise-input` | No | Denoise an existing WAV file instead of processing video |
 
    When `-fl` and/or `-fh` are specified, a Butterworth filter is applied to the phase signals before audio reconstruction, rejecting low-frequency drift and high-frequency noise to improve output quality.
 
@@ -89,6 +93,30 @@ No Python setup needed — just Docker.
    docker run --rm --name visual-mic-run -v /path/to/videos:/data visual-mic -i /data/testvid.avi -o /data/sound.wav
    ```
    All the same arguments (`-fl`, `-fh`, `--fps`, `--roi`, etc.) work exactly as described above.
+
+### D. Running with GPU acceleration (Docker + CUDA)
+
+For large videos, the DTCWT forward pass is the main bottleneck. GPU mode uses [`pytorch_wavelets`](https://github.com/fbcotter/pytorch_wavelets) with CUDA to run batched transforms on the GPU, providing a significant speedup.
+
+**Requirements:** NVIDIA GPU with CUDA support, Docker with `--gpus` (nvidia-container-toolkit).
+
+1. Build the GPU image:
+   ```sh
+   ./docker-build-gpu.sh
+   ```
+
+2. Run with `--gpu`:
+   ```sh
+   docker run --rm --gpus device=0 -v /path/to/videos:/data \
+       visual-mic-gpu --gpu -i /data/Chips1-2200Hz-Mary_Had-input.avi \
+       -o /data/sound_gpu.wav --fps 2200 --batch-size 32
+   ```
+
+   The `--batch-size` flag controls how many frames are processed per GPU batch (default: 16). Larger batches are faster but use more GPU memory. At 704x704, each frame uses ~10 MB of GPU memory, so `--batch-size 32` needs ~660 MB including overhead — well within the capacity of most GPUs.
+
+   If you run out of GPU memory, reduce `--batch-size` (e.g., `--batch-size 8` or `--batch-size 1`).
+
+   **Note:** GPU mode produces very similar but not bit-identical output compared to CPU mode, due to float32 vs float64 precision differences.
 
 ---
 
@@ -523,9 +551,11 @@ Denoising is a separate post-processing step. We apply image-based morphological
 
 ## Future Work
 
-- **GPU-accelerated DTCWT**: The DTCWT forward pass is the main bottleneck (~0.14s per 704x704 frame on CPU). Using [`pytorch_wavelets`](https://github.com/fbcotter/pytorch_wavelets) with CUDA could provide ~10x speedup by running the transform on GPU. This requires adapting the code from `dtcwt.Transform2d()` to PyTorch's `DTCWTForward` API and converting frames to GPU tensors.
+- **GPU-accelerated DTCWT** *(implemented)*: The `--gpu` flag uses [`pytorch_wavelets`](https://github.com/fbcotter/pytorch_wavelets) with CUDA to run batched DTCWT transforms on the GPU. See [Running with GPU acceleration](#d-running-with-gpu-acceleration-docker--cuda) for setup instructions.
 
 - **Multiprocessing across frames**: Frame processing is independent after the reference frame is computed. Reading frames remains sequential (VideoCapture limitation), but the DTCWT + phase extraction can be parallelized across CPU cores using batch processing with `multiprocessing.Pool`, giving ~Nx speedup on an N-core machine.
+
+- **Better post-processing / signal recovery**: The current algorithm uses properly wrapped phase differences (`np.angle(coeffs * conj(ref))`, bounded to [-π, π]), which is mathematically correct but produces lower-amplitude signals for very small vibrations. The original (2021) implementation used unwrapped phase subtraction (`phase - ref_phase`), which could exceed [-π, π] and produced stronger (but noisier) output. Exploring better post-processing — such as phase unwrapping, adaptive Wiener filtering, or learned denoising — could recover signal strength without reintroducing the phase wrapping artifacts.
 
 ---
 
