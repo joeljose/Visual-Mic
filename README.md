@@ -29,6 +29,7 @@ The sample videos can be downloaded from [here](http://data.csail.mit.edu/vidmag
   - [2.5 What Each Scale Captures](#25-what-each-scale-captures)
 - [Part 3: Literature Survey](#part-3-literature-survey)
 - [Part 4: Denoising](#part-4-denoising)
+- [Future Work](#future-work)
 - [References](#references)
 
 ---
@@ -81,11 +82,13 @@ No Python setup needed — just Docker.
    ```sh
    ./docker-build.sh
    ```
+   This builds a Docker image named **`visual-mic`** using `docker-build.sh`, which auto-detects your host username, UID, and GID so that output files are owned by your host user.
+
 2. Run (mount the directory containing your video):
    ```sh
-   docker run --rm -v /path/to/videos:/data visual-mic -i /data/testvid.avi -o /data/sound.wav
+   docker run --rm --name visual-mic-run -v /path/to/videos:/data visual-mic -i /data/testvid.avi -o /data/sound.wav
    ```
-   All the same arguments (`-fl`, `-fh`, `--roi`, etc.) work exactly as described above. Output files will be owned by your host user.
+   All the same arguments (`-fl`, `-fh`, `--fps`, `--roi`, etc.) work exactly as described above.
 
 ---
 
@@ -515,6 +518,14 @@ The vibration signal is present across all scales (the whole surface moves), but
 # Part 4: Denoising
 
 Denoising is a separate post-processing step. We apply image-based morphological filtering to the audio spectrograms, and then reconstruct audio from the processed spectrogram. Since denoising involves multiple stages, it is maintained as a separate project: [audio_denoising](https://github.com/joeljose/audio_denoising)
+
+---
+
+## Future Work
+
+- **GPU-accelerated DTCWT**: The DTCWT forward pass is the main bottleneck (~0.14s per 704x704 frame on CPU). Using [`pytorch_wavelets`](https://github.com/fbcotter/pytorch_wavelets) with CUDA could provide ~10x speedup by running the transform on GPU. This requires adapting the code from `dtcwt.Transform2d()` to PyTorch's `DTCWTForward` API and converting frames to GPU tensors.
+
+- **Multiprocessing across frames**: Frame processing is independent after the reference frame is computed. Reading frames remains sequential (VideoCapture limitation), but the DTCWT + phase extraction can be parallelized across CPU cores using batch processing with `multiprocessing.Pool`, giving ~Nx speedup on an N-core machine.
 
 ---
 

@@ -20,4 +20,4 @@ COPY visualmic.py .
 
 USER ${UNAME}
 
-ENTRYPOINT ["python", "visualmic.py"]
+ENTRYPOINT ["python", "-u", "visualmic.py"]
