@@ -55,6 +55,7 @@ You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l
    python visualmic.py -i <input_video>
    python visualmic.py -i testvid.avi -o recovered_audio.wav
    python visualmic.py -i testvid.avi -fl 80 -fh 1000
+   python visualmic.py -i testvid.avi --roi 100,50,200,150
    ```
    | Argument | Required | Description |
    |----------|----------|-------------|
@@ -62,8 +63,11 @@ You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l
    | `-o`, `--output` | No | Output audio path (default: `sound.wav`) |
    | `-fl`, `--freq-low` | No | Lower cutoff frequency in Hz for temporal bandpass filter |
    | `-fh`, `--freq-high` | No | Upper cutoff frequency in Hz for temporal bandpass filter |
+   | `--roi` | No | Region of interest as `x,y,w,h` — crops each frame before processing |
 
    When `-fl` and/or `-fh` are specified, a Butterworth filter is applied to the phase signals before audio reconstruction, rejecting low-frequency drift and high-frequency noise to improve output quality.
+
+   When `--roi` is specified, each frame is cropped to the given rectangle before the DTCWT decomposition. This reduces computation and can improve SNR by focusing on the vibrating object (e.g., the bag of chips) and excluding background regions.
 
 ---
 
@@ -309,12 +313,12 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 
 Here's how `visualmic.py` implements the pipeline, with line references.
 
-### Steps 1–3: Stream Video, DTCWT, and Phase Extraction (lines 22–65)
+### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction (lines 22–68)
 
-Frames are streamed directly from the video file — each frame is read, transformed, and discarded immediately, so only one raw frame is in memory at a time. This enables processing of arbitrarily long videos without running out of memory.
+Frames are streamed directly from the video file — each frame is read, transformed, and discarded immediately, so only one raw frame is in memory at a time. This enables processing of arbitrarily long videos without running out of memory. If an ROI is specified, each frame is cropped before the DTCWT decomposition, reducing computation and focusing on the vibrating object.
 
 ```python
-def soundfromvid(cap, frameCount, nlevels, orient, ref_no, ref_orient, ref_level):
+def soundfromvid(cap, frameCount, nlevels, orient, ref_no, ref_orient, ref_level, ..., roi=None):
     tr = dtcwt.Transform2d()
     ref_frame = None
     data = []
@@ -324,6 +328,9 @@ def soundfromvid(cap, frameCount, nlevels, orient, ref_no, ref_orient, ref_level
         if not ret or raw_frame is None:
             break
         gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
+        if roi is not None:
+            rx, ry, rw, rh = roi
+            gray = gray[ry:ry+rh, rx:rx+rw]
         dtcwt_frame = tr.forward(gray, nlevels=nlevels)
 
         if fc == ref_no:
@@ -361,7 +368,7 @@ Phase wrapping ensures the difference always reflects the true small angular dis
 
 **Result:** `data[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
 
-### Step 3.5: Temporal Bandpass Filtering (lines 67–95, optional)
+### Step 3.5: Temporal Bandpass Filtering (lines 70–98, optional)
 
 When `-fl` and/or `-fh` are specified, a 4th-order Butterworth filter is applied to each of the 18 phase signals before cross-correlation:
 
@@ -380,7 +387,7 @@ for i in range(nlevels):
 - Skipped if video has fewer than 13 frames (minimum required for `filtfilt`)
 - If only `-fl` is given, acts as highpass; if only `-fh`, acts as lowpass
 
-### Step 4: Temporal Alignment via Cross-Correlation (lines 97–101)
+### Step 4: Temporal Alignment via Cross-Correlation (lines 100–104)
 
 ```python
 ref_vector = data[:, ref_level, ref_orient].reshape(-1)
@@ -397,7 +404,7 @@ def maxTime(a, b):
     return np.argmax(c) - (len(b) - 1)
 ```
 
-### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 103–107)
+### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 106–110)
 
 ```python
 for fc in range(frameCount):
@@ -406,7 +413,7 @@ for fc in range(frameCount):
             sound_raw[fc] += data[fc - int(shift_matrix[i,j]), i, j]
 ```
 
-### Step 6: Normalize to $[-1, 1]$ (lines 108–114)
+### Step 6: Normalize to $[-1, 1]$ (lines 111–117)
 
 ```python
 p_min = np.min(sound_raw)
@@ -419,7 +426,7 @@ else:
 
 Includes a guard against division by zero when no motion is detected.
 
-### Step 7: Output WAV (lines 14–20, called at line 167)
+### Step 7: Output WAV (lines 14–20, called at line 199)
 
 ```python
 def npTowav(np_file, output_name, sps):

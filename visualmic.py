@@ -19,7 +19,7 @@ def npTowav(np_file, output_name, sps):
 		write(output_name, sps, waveform_integers)
 		print(f"Output saved to {output_name}")
 
-def soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,freq_low=None,freq_high=None):
+def soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,freq_low=None,freq_high=None,roi=None):
 
 	tr = dtcwt.Transform2d()
 	ref_frame = None
@@ -31,6 +31,9 @@ def soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,f
 			print(f"Warning: could not read frame {fc}, stopping at {len(data)} frames")
 			break
 		gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
+		if roi is not None:
+			rx, ry, rw, rh = roi
+			gray = gray[ry:ry+rh, rx:rx+rw]
 
 		dtcwt_frame = tr.forward(gray, nlevels=nlevels)
 
@@ -125,6 +128,7 @@ def main():
 	parser.add_argument('-o', '--output', default='sound.wav', help='Specify output audio path (default: sound.wav)')
 	parser.add_argument('-fl', '--freq-low', type=float, default=None, help='Lower cutoff frequency in Hz for temporal bandpass filter')
 	parser.add_argument('-fh', '--freq-high', type=float, default=None, help='Upper cutoff frequency in Hz for temporal bandpass filter')
+	parser.add_argument('--roi', type=str, default=None, help='Region of interest as x,y,w,h (e.g. --roi 100,50,200,150)')
 
 	# Parse the command-line arguments
 	args = parser.parse_args()
@@ -132,6 +136,16 @@ def main():
 	output_name = args.output
 	freq_low = args.freq_low
 	freq_high = args.freq_high
+	roi = None
+	if args.roi is not None:
+		try:
+			parts = [int(p) for p in args.roi.split(',')]
+			if len(parts) != 4:
+				raise ValueError
+			roi = tuple(parts)
+		except ValueError:
+			print("Error: --roi must be four integers: x,y,w,h (e.g. --roi 100,50,200,150)")
+			sys.exit(1)
 
 	if not os.path.isfile(filename):
 		print(f"Error: file '{filename}' not found")
@@ -159,12 +173,30 @@ def main():
 	print(f"frameCount: {frameCount}, frameWidth: {frameWidth}, frameHeight: {frameHeight}, fps: {fps}")
 
 	nlevels=3
+	min_dim = 2 ** nlevels  # minimum dimension for DTCWT (8 pixels for 3 levels)
+
+	if roi is not None:
+		rx, ry, rw, rh = roi
+		if rx < 0 or ry < 0 or rw <= 0 or rh <= 0:
+			print("Error: ROI values must be non-negative and width/height must be positive")
+			cap.release()
+			sys.exit(1)
+		if rx + rw > frameWidth or ry + rh > frameHeight:
+			print(f"Error: ROI ({rx},{ry},{rw},{rh}) exceeds frame dimensions ({frameWidth}x{frameHeight})")
+			cap.release()
+			sys.exit(1)
+		if rw < min_dim or rh < min_dim:
+			print(f"Error: ROI dimensions ({rw}x{rh}) too small for {nlevels}-level DTCWT (minimum {min_dim}x{min_dim})")
+			cap.release()
+			sys.exit(1)
+		print(f"Using ROI: x={rx}, y={ry}, w={rw}, h={rh}")
+
 	orient=6
 	ref_no=0
 	ref_level=0
 	ref_orient=0
 
-	npTowav(soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,freq_low,freq_high), output_name, int(fps))
+	npTowav(soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,freq_low,freq_high,roi), output_name, int(fps))
 
 
 if __name__ == "__main__":
