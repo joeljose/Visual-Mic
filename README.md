@@ -50,9 +50,15 @@ You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l
    ```sh
    pip install -r requirements.txt
    ```
-4. The video which is to be processed should be in the "Visual-Mic" repo, named as "testvid.avi".
-
-Now you can run visualmic.py
+4. Run visualmic.py:
+   ```sh
+   python visualmic.py -i <input_video>
+   python visualmic.py -i testvid.avi -o recovered_audio.wav
+   ```
+   | Argument | Required | Description |
+   |----------|----------|-------------|
+   | `-i`, `--input` | Yes | Path to input video file |
+   | `-o`, `--output` | No | Output audio path (default: `sound.wav`) |
 
 ---
 
@@ -298,59 +304,44 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 
 Here's how `visualmic.py` implements the pipeline, with line references.
 
-### Step 1: Load Video (lines 73–121)
+### Steps 1–3: Stream Video, DTCWT, and Phase Extraction (lines 22–65)
+
+Frames are streamed directly from the video file — each frame is read, transformed, and discarded immediately, so only one raw frame is in memory at a time. This enables processing of arbitrarily long videos without running out of memory.
 
 ```python
-if not os.path.isfile(filename):
-    print(f"Error: file '{filename}' not found")
-    sys.exit(1)
+def soundfromvid(cap, frameCount, nlevels, orient, ref_no, ref_orient, ref_level):
+    tr = dtcwt.Transform2d()
+    ref_frame = None
+    data = []
 
-cap = cv2.VideoCapture(filename)
-if not cap.isOpened():
-    print(f"Error: could not open '{filename}' as video")
-    sys.exit(1)
+    for fc in range(frameCount):
+        ret, raw_frame = cap.read()
+        if not ret or raw_frame is None:
+            break
+        gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
+        dtcwt_frame = tr.forward(gray, nlevels=nlevels)
 
-# ... FPS/frameCount validation ...
+        if fc == ref_no:
+            ref_frame = dtcwt_frame
 
-for fc in range(frameCount):
-    ret, frame = cap.read()
-    if not ret or frame is None:
-        print(f"Warning: could not read frame {fc}, stopping at {len(input_data)} frames")
-        break
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    input_data.append(gray)
-```
+        row = np.zeros((nlevels, orient))
+        for level in range(nlevels):
+            for angle in range(orient):
+                coeffs = dtcwt_frame.highpasses[level][:,:,angle]
+                ref_coeffs = ref_frame.highpasses[level][:,:,angle]
+                amp = np.abs(coeffs)
+                phase = np.angle(coeffs)
+                ref_phase = np.angle(ref_coeffs)
+                phase_diff = np.angle(np.exp(1j * (phase - ref_phase)))
+                row[level,angle] = np.sum(amp*amp * phase_diff)
+        data.append(row)
 
-Input validation checks: file existence, video format, frame count, FPS (defaults to 30 if unreported). Frames are loaded into memory as grayscale, with graceful handling of mid-video read failures.
-
-### Step 2: Initialize DTCWT and Reference Frame (lines 24–25)
-
-```python
-tr = dtcwt.Transform2d()
-ref_frame = tr.forward(input_data[ref_no], nlevels=nlevels)  # ref_no = 0
+    data = np.array(data)  # shape: (frameCount, nlevels, orient)
 ```
 
 `tr.forward()` returns a `Pyramid` object:
-- `pyramid.lowpass` — the low-frequency residual image
-- `pyramid.highpasses` — tuple of complex arrays, one per level
-  - `pyramid.highpasses[level]` has shape $(H_{\text{level}}, W_{\text{level}}, 6)$
-  - Each value is a **complex number** encoding amplitude and phase
-
-### Step 3: Extract Phase Variation and Spatial Average (lines 28–38)
-
-```python
-for fc in range(frameCount):
-    frame = tr.forward(input_data[fc], nlevels=nlevels)
-    for level in range(nlevels):           # 3 scales
-        for angle in range(orient):         # 6 orientations
-            coeffs = frame.highpasses[level][:,:,angle]
-            ref_coeffs = ref_frame.highpasses[level][:,:,angle]
-            amp = np.abs(coeffs)
-            phase = np.angle(coeffs)
-            ref_phase = np.angle(ref_coeffs)
-            phase_diff = np.angle(np.exp(1j * (phase - ref_phase)))
-            data[fc,level,angle] = np.sum(amp*amp * phase_diff)
-```
+- `pyramid.highpasses[level]` has shape $(H_{\text{level}}, W_{\text{level}}, 6)$
+- Each value is a **complex number** encoding amplitude and phase
 
 Vectorized NumPy operations on entire 2D spatial slices:
 
@@ -365,7 +356,7 @@ Phase wrapping ensures the difference always reflects the true small angular dis
 
 **Result:** `data[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
 
-### Step 4: Temporal Alignment via Cross-Correlation (lines 40–44)
+### Step 4: Temporal Alignment via Cross-Correlation (lines 66–70)
 
 ```python
 ref_vector = data[:, ref_level, ref_orient].reshape(-1)
@@ -382,7 +373,7 @@ def maxTime(a, b):
     return np.argmax(c) - (len(b) - 1)
 ```
 
-### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 46–50)
+### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 72–76)
 
 ```python
 for fc in range(frameCount):
@@ -391,7 +382,7 @@ for fc in range(frameCount):
             sound_raw[fc] += data[fc - int(shift_matrix[i,j]), i, j]
 ```
 
-### Step 6: Normalize to $[-1, 1]$ (lines 51–57)
+### Step 6: Normalize to $[-1, 1]$ (lines 77–83)
 
 ```python
 p_min = np.min(sound_raw)
@@ -404,7 +395,7 @@ else:
 
 Includes a guard against division by zero when no motion is detected.
 
-### Step 7: Output WAV (lines 14–20)
+### Step 7: Output WAV (lines 14–20, called at line 132)
 
 ```python
 def npTowav(np_file, output_name, sps):

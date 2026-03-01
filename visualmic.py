@@ -19,24 +19,50 @@ def npTowav(np_file, output_name, sps):
 		write(output_name, sps, waveform_integers)
 		print(f"Output saved to {output_name}")
 
-def soundfromvid(input_data,frameCount,nlevels,orient,ref_no,ref_orient,ref_level):
+def soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level):
 
 	tr = dtcwt.Transform2d()
-	ref_frame= tr.forward(input_data[ref_no],nlevels =nlevels)
-	data = np.zeros((frameCount,nlevels,orient))
+	ref_frame = None
+	data = []
 
 	for fc in range(frameCount):
-		frame = tr.forward(input_data[fc],nlevels =nlevels)
+		ret, raw_frame = cap.read()
+		if not ret or raw_frame is None:
+			print(f"Warning: could not read frame {fc}, stopping at {len(data)} frames")
+			break
+		gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
+
+		dtcwt_frame = tr.forward(gray, nlevels=nlevels)
+
+		if fc == ref_no:
+			ref_frame = dtcwt_frame
+
+		if ref_frame is None:
+			# Haven't reached reference frame yet, store zeros
+			data.append(np.zeros((nlevels, orient)))
+			continue
+
+		row = np.zeros((nlevels, orient))
 		for level in range(nlevels):
 			for angle in range(orient):
-				coeffs = frame.highpasses[level][:,:,angle]
+				coeffs = dtcwt_frame.highpasses[level][:,:,angle]
 				ref_coeffs = ref_frame.highpasses[level][:,:,angle]
 				amp = np.abs(coeffs)
 				phase = np.angle(coeffs)
 				ref_phase = np.angle(ref_coeffs)
 				phase_diff = np.angle(np.exp(1j * (phase - ref_phase)))
-				data[fc,level,angle] = np.sum(amp*amp * phase_diff)
-	print("Transform complete")
+				row[level,angle] = np.sum(amp*amp * phase_diff)
+		data.append(row)
+
+	cap.release()
+
+	if len(data) == 0:
+		print("Error: no frames could be read from video")
+		sys.exit(1)
+
+	frameCount = len(data)
+	data = np.array(data)
+	print(f"Transform complete: {frameCount} frames processed")
 	shift_matrix=np.zeros((nlevels,orient))
 	ref_vector=data[:,ref_level,ref_orient].reshape(-1)
 	for i in range(nlevels):
@@ -65,10 +91,12 @@ def main():
 
 	# Add arguments
 	parser.add_argument('-i', '--input', required=True, help='Specify input video path')
+	parser.add_argument('-o', '--output', default='sound.wav', help='Specify output audio path (default: sound.wav)')
 
 	# Parse the command-line arguments
 	args = parser.parse_args()
 	filename = args.input
+	output_name = args.output
 
 	if not os.path.isfile(filename):
 		print(f"Error: file '{filename}' not found")
@@ -101,26 +129,7 @@ def main():
 	ref_level=0
 	ref_orient=0
 
-	input_data = []
-
-	for fc in range(frameCount):
-		ret, frame = cap.read()
-		if not ret or frame is None:
-			print(f"Warning: could not read frame {fc}, stopping at {len(input_data)} frames")
-			break
-		gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-		input_data.append(gray)
-
-	cap.release()
-
-	if len(input_data) == 0:
-		print("Error: no frames could be read from video")
-		sys.exit(1)
-
-	frameCount = len(input_data)
-	print(f"Video Loaded: {frameCount} frames")
-
-	npTowav(soundfromvid(input_data,frameCount,nlevels,orient,ref_no,ref_orient,ref_level), "sound.wav", int(fps))
+	npTowav(soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level), output_name, int(fps))
 
 
 if __name__ == "__main__":
