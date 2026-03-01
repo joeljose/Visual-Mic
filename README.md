@@ -158,15 +158,15 @@ The filters can be analytically rotated to any orientation without recomputing �
 
 ```mermaid
 flowchart TD
-    A["High-Speed Video\nV(x, y, t)"] --> B["Complex Steerable Pyramid\n(per frame)"]
-    B --> C["Extract Amplitude A\nand Phase φ"]
-    C --> D["Phase Variation\nφ_v(t) = φ(t) − φ(t₀)"]
-    D --> E["A²-Weighted Spatial Average\nΦ(s, θ, t) = Σ A² · φ_v"]
-    E --> F["18 Sub-band\nTime Signals"]
-    F --> G["Cross-Correlation\nAlignment"]
-    G --> H["Sum Across\nAll Sub-bands"]
-    H --> I["Normalize to\n[−1, 1]"]
-    I --> J["Output WAV\n(sample rate = FPS)"]
+    A["High-Speed Video V(x, y, t)"] --> B["Complex Steerable Pyramid<br>(per frame)"]
+    B --> C["Extract Amplitude A<br>and Phase phi"]
+    C --> D["Phase Variation<br>phi_v(t) = phi(t) - phi(t0)"]
+    D --> E["A-squared Weighted Spatial Average<br>Phi(s, theta, t) = Sum A-squared * phi_v"]
+    E --> F["18 Sub-band Time Signals"]
+    F --> G["Cross-Correlation Alignment"]
+    G --> H["Sum Across All Sub-bands"]
+    H --> I["Normalize to -1, 1"]
+    I --> J["Output WAV<br>(sample rate = FPS)"]
 
     style A fill:#4a90d9,color:#fff
     style J fill:#2ecc71,color:#fff
@@ -313,13 +313,13 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 
 ```mermaid
 flowchart TD
-    A["Grayscale Frame\n(H × W)"] --> B["2D DTCWT"]
-    B --> L0["Level 0 — finest\n6 complex sub-bands\n(H/2 × W/2)"]
-    B --> L1["Level 1 — middle\n6 complex sub-bands\n(H/4 × W/4)"]
-    B --> L2["Level 2 — coarsest\n6 complex sub-bands\n(H/8 × W/8)"]
-    L0 --> O0["±15°   ±45°   ±75°"]
-    L1 --> O1["±15°   ±45°   ±75°"]
-    L2 --> O2["±15°   ±45°   ±75°"]
+    A["Grayscale Frame<br>H x W"] --> B["2D DTCWT"]
+    B --> L0["Level 0 - finest<br>6 complex sub-bands<br>H/2 x W/2"]
+    B --> L1["Level 1 - middle<br>6 complex sub-bands<br>H/4 x W/4"]
+    B --> L2["Level 2 - coarsest<br>6 complex sub-bands<br>H/8 x W/8"]
+    L0 --> O0["+/-15  +/-45  +/-75 degrees"]
+    L1 --> O1["+/-15  +/-45  +/-75 degrees"]
+    L2 --> O2["+/-15  +/-45  +/-75 degrees"]
 
     style A fill:#4a90d9,color:#fff
     style L0 fill:#e67e22,color:#fff
@@ -348,23 +348,23 @@ Here's how `visualmic.py` implements the pipeline, with line references.
 ```mermaid
 flowchart TD
     A["Input Video"] --> B["Read Frame"]
-    B --> C["Convert to\nGrayscale"]
-    C --> D{"ROI\nspecified?"}
+    B --> C["Convert to Grayscale"]
+    C --> D{"ROI specified?"}
     D -->|Yes| E["Crop to ROI"]
     D -->|No| F
-    E --> F["2D DTCWT\nForward Transform"]
-    F --> G["Extract Amplitude A\nand Phase φ"]
-    G --> H["Phase Diff (wrapped):\nΔφ = angle(e^i(φ − φ_ref))"]
-    H --> I["A²-Weighted Spatial Sum\nframe_phases[level, angle]"]
-    I --> J{"More\nframes?"}
+    E --> F["2D DTCWT Forward Transform"]
+    F --> G["Extract Amplitude A and Phase phi"]
+    G --> H["Wrapped Phase Diff"]
+    H --> I["A-squared Weighted Spatial Sum"]
+    I --> J{"More frames?"}
     J -->|Yes| B
-    J -->|No| K{"Bandpass\nfilter?"}
-    K -->|"-fl / -fh given"| L["Butterworth\nsosfiltfilt"]
+    J -->|No| K{"Bandpass filter?"}
+    K -->|"-fl / -fh given"| L["Butterworth sosfiltfilt"]
     K -->|No| M
-    L --> M["Cross-Correlation\nAlignment"]
-    M --> N["Sum Across\n18 Sub-bands"]
-    N --> O["Normalize\nto [−1, 1]"]
-    O --> P["save_wav\n(sample rate = FPS)"]
+    L --> M["Cross-Correlation Alignment"]
+    M --> N["Sum Across 18 Sub-bands"]
+    N --> O["Normalize to -1, 1"]
+    O --> P["save_wav<br>sample rate = FPS"]
 
     style A fill:#4a90d9,color:#fff
     style P fill:#2ecc71,color:#fff
