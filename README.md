@@ -313,17 +313,17 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 
 Here's how `visualmic.py` implements the pipeline, with line references.
 
-### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction (lines 22–68)
+### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction (lines 23–68)
 
 Frames are streamed directly from the video file — each frame is read, transformed, and discarded immediately, so only one raw frame is in memory at a time. This enables processing of arbitrarily long videos without running out of memory. If an ROI is specified, each frame is cropped before the DTCWT decomposition, reducing computation and focusing on the vibrating object.
 
 ```python
-def soundfromvid(cap, frameCount, nlevels, orient, ref_no, ref_orient, ref_level, ..., roi=None):
-    tr = dtcwt.Transform2d()
+def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, ..., roi=None):
+    transform = dtcwt.Transform2d()
     ref_frame = None
-    data = []
+    phase_signals = []
 
-    for fc in range(frameCount):
+    for fc in range(frame_count):
         ret, raw_frame = cap.read()
         if not ret or raw_frame is None:
             break
@@ -331,27 +331,27 @@ def soundfromvid(cap, frameCount, nlevels, orient, ref_no, ref_orient, ref_level
         if roi is not None:
             rx, ry, rw, rh = roi
             gray = gray[ry:ry+rh, rx:rx+rw]
-        dtcwt_frame = tr.forward(gray, nlevels=nlevels)
+        dtcwt_frame = transform.forward(gray, nlevels=nlevels)
 
-        if fc == ref_no:
+        if fc == ref_index:
             ref_frame = dtcwt_frame
 
-        row = np.zeros((nlevels, orient))
+        frame_phases = np.zeros((nlevels, n_orient))
         for level in range(nlevels):
-            for angle in range(orient):
-                coeffs = dtcwt_frame.highpasses[level][:,:,angle]
-                ref_coeffs = ref_frame.highpasses[level][:,:,angle]
+            for angle in range(n_orient):
+                coeffs = dtcwt_frame.highpasses[level][:, :, angle]
+                ref_coeffs = ref_frame.highpasses[level][:, :, angle]
                 amp = np.abs(coeffs)
                 phase = np.angle(coeffs)
                 ref_phase = np.angle(ref_coeffs)
                 phase_diff = np.angle(np.exp(1j * (phase - ref_phase)))
-                row[level,angle] = np.sum(amp*amp * phase_diff)
-        data.append(row)
+                frame_phases[level, angle] = np.sum(amp * amp * phase_diff)
+        phase_signals.append(frame_phases)
 
-    data = np.array(data)  # shape: (frameCount, nlevels, orient)
+    phase_signals = np.array(phase_signals)  # shape: (frame_count, nlevels, n_orient)
 ```
 
-`tr.forward()` returns a `Pyramid` object:
+`transform.forward()` returns a `Pyramid` object:
 - `pyramid.highpasses[level]` has shape $(H_{\text{level}}, W_{\text{level}}, 6)$
 - Each value is a **complex number** encoding amplitude and phase
 
@@ -361,12 +361,12 @@ Vectorized NumPy operations on entire 2D spatial slices:
 |-----------|------|----------------|
 | Extract amplitude $A$ and phase $\phi$ | `np.abs(...)`, `np.angle(...)` | Step 2 of original |
 | Phase variation $\phi_v$ (wrapped to $[-\pi, \pi]$) | `np.angle(np.exp(1j * (phase - ref_phase)))` | Step 3 of original |
-| $A^2$-weighted accumulation | `amp*amp * (...)` | Step 4 of original |
+| $A^2$-weighted accumulation | `amp * amp * (...)` | Step 4 of original |
 | Spatial sum $\sum_{x,y}$ | `np.sum(...)` | Step 4 of original |
 
 Phase wrapping ensures the difference always reflects the true small angular displacement, even when phases cross the $\pm\pi$ boundary.
 
-**Result:** `data[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
+**Result:** `phase_signals[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
 
 ### Step 3.5: Temporal Bandpass Filtering (lines 70–98, optional)
 
@@ -377,8 +377,8 @@ nyquist = fps / 2.0
 sos = signal.butter(4, [freq_low / nyquist, freq_high_clamped / nyquist],
                     btype='bandpass', output='sos')
 for i in range(nlevels):
-    for j in range(orient):
-        data[:,i,j] = signal.sosfiltfilt(sos, data[:,i,j])
+    for j in range(n_orient):
+        phase_signals[:, i, j] = signal.sosfiltfilt(sos, phase_signals[:, i, j])
 ```
 
 - `sosfiltfilt` applies the filter forward and backward (zero-phase), so no time delay is introduced
@@ -390,30 +390,30 @@ for i in range(nlevels):
 ### Step 4: Temporal Alignment via Cross-Correlation (lines 100–104)
 
 ```python
-ref_vector = data[:, ref_level, ref_orient].reshape(-1)
+ref_vector = phase_signals[:, ref_level, ref_orient].reshape(-1)
 for i in range(nlevels):
-    for j in range(orient):
-        shift_matrix[i,j] = maxTime(ref_vector, data[:,i,j].reshape(-1))
+    for j in range(n_orient):
+        shift_matrix[i, j] = find_best_shift(ref_vector, phase_signals[:, i, j].reshape(-1))
 ```
 
-The `maxTime` function (lines 10–12) uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
+The `find_best_shift` function (lines 12–14) uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
 
 ```python
-def maxTime(a, b):
-    c = signal.correlate(a, b, mode='full')
-    return np.argmax(c) - (len(b) - 1)
+def find_best_shift(a, b):
+    correlation = signal.correlate(a, b, mode='full')
+    return np.argmax(correlation) - (len(b) - 1)
 ```
 
 ### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 106–110)
 
 ```python
-for fc in range(frameCount):
+for fc in range(frame_count):
     for i in range(nlevels):
-        for j in range(orient):
-            sound_raw[fc] += data[fc - int(shift_matrix[i,j]), i, j]
+        for j in range(n_orient):
+            sound_raw[fc] += phase_signals[fc - int(shift_matrix[i, j]), i, j]
 ```
 
-### Step 6: Normalize to $[-1, 1]$ (lines 111–117)
+### Step 6: Normalize to $[-1, 1]$ (lines 112–118)
 
 ```python
 p_min = np.min(sound_raw)
@@ -426,23 +426,23 @@ else:
 
 Includes a guard against division by zero when no motion is detected.
 
-### Step 7: Output WAV (lines 14–20, called at line 199)
+### Step 7: Output WAV (lines 17–20, called at line 189)
 
 ```python
-def npTowav(np_file, output_name, sps):
-    waveform_integers = np.int16(np_file * 32767)
-    write(output_name, sps, waveform_integers)
+def save_wav(samples, output_name, sample_rate):
+    waveform_integers = np.int16(samples * 32767)
+    write(output_name, sample_rate, waveform_integers)
 ```
 
-The sampling rate `sps` is set to the video's FPS, ensuring the output audio matches the temporal resolution of the input video.
+The `sample_rate` is set to the video's FPS, ensuring the output audio matches the temporal resolution of the input video.
 
 ## 2.4 Parameters Used
 
 | Parameter | Value | Meaning |
 |-----------|-------|---------|
 | `nlevels` | 3 | Number of wavelet decomposition scales |
-| `orient` | 6 | Number of orientations per scale (fixed by DTCWT) |
-| `ref_no` | 0 | Reference frame index (first frame) |
+| `n_orient` | 6 | Number of orientations per scale (fixed by DTCWT) |
+| `ref_index` | 0 | Reference frame index (first frame) |
 | `ref_level` | 0 | Reference sub-band: finest scale |
 | `ref_orient` | 0 | Reference sub-band: first orientation (~$+15°$) |
 

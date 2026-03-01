@@ -7,69 +7,67 @@ import numpy as np
 import cv2
 from scipy.io.wavfile import write
 
-def maxTime(a,b):
-		c = signal.correlate(a, b, mode='full')
-		return np.argmax(c) - (len(b) - 1)
 
-def npTowav(np_file, output_name, sps):
-		# Samples per second(sampling frequency of the audio file)
-		waveform_integers = np.int16(np_file * 32767)
+def find_best_shift(a, b):
+	correlation = signal.correlate(a, b, mode='full')
+	return np.argmax(correlation) - (len(b) - 1)
 
-		# Write the .wav file
-		write(output_name, sps, waveform_integers)
-		print(f"Output saved to {output_name}")
 
-def soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,freq_low=None,freq_high=None,roi=None):
+def save_wav(samples, output_name, sample_rate):
+	waveform_integers = np.int16(samples * 32767)
+	write(output_name, sample_rate, waveform_integers)
+	print(f"Output saved to {output_name}")
 
-	tr = dtcwt.Transform2d()
+
+def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None):
+	transform = dtcwt.Transform2d()
 	ref_frame = None
-	data = []
+	phase_signals = []
 
-	for fc in range(frameCount):
+	for fc in range(frame_count):
 		ret, raw_frame = cap.read()
 		if not ret or raw_frame is None:
-			print(f"Warning: could not read frame {fc}, stopping at {len(data)} frames")
+			print(f"Warning: could not read frame {fc}, stopping at {len(phase_signals)} frames")
 			break
 		gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
 		if roi is not None:
 			rx, ry, rw, rh = roi
 			gray = gray[ry:ry+rh, rx:rx+rw]
 
-		dtcwt_frame = tr.forward(gray, nlevels=nlevels)
+		dtcwt_frame = transform.forward(gray, nlevels=nlevels)
 
-		if fc == ref_no:
+		if fc == ref_index:
 			ref_frame = dtcwt_frame
 
 		if ref_frame is None:
-			# Haven't reached reference frame yet, store zeros
-			data.append(np.zeros((nlevels, orient)))
+			phase_signals.append(np.zeros((nlevels, n_orient)))
 			continue
 
-		row = np.zeros((nlevels, orient))
+		frame_phases = np.zeros((nlevels, n_orient))
 		for level in range(nlevels):
-			for angle in range(orient):
-				coeffs = dtcwt_frame.highpasses[level][:,:,angle]
-				ref_coeffs = ref_frame.highpasses[level][:,:,angle]
+			for angle in range(n_orient):
+				coeffs = dtcwt_frame.highpasses[level][:, :, angle]
+				ref_coeffs = ref_frame.highpasses[level][:, :, angle]
 				amp = np.abs(coeffs)
 				phase = np.angle(coeffs)
 				ref_phase = np.angle(ref_coeffs)
 				phase_diff = np.angle(np.exp(1j * (phase - ref_phase)))
-				row[level,angle] = np.sum(amp*amp * phase_diff)
-		data.append(row)
+				frame_phases[level, angle] = np.sum(amp * amp * phase_diff)
+		phase_signals.append(frame_phases)
 
 	cap.release()
 
-	if len(data) == 0:
+	if len(phase_signals) == 0:
 		print("Error: no frames could be read from video")
 		sys.exit(1)
 
-	frameCount = len(data)
-	data = np.array(data)
-	print(f"Transform complete: {frameCount} frames processed")
+	frame_count = len(phase_signals)
+	phase_signals = np.array(phase_signals)
+	print(f"Transform complete: {frame_count} frames processed")
 
 	# Temporal bandpass filtering
 	nyquist = fps / 2.0
-	apply_filter = (freq_low is not None or freq_high is not None) and frameCount > 12
+	apply_filter = (freq_low is not None or freq_high is not None) and frame_count > 12
 
 	if apply_filter:
 		if freq_low is not None and freq_high is not None:
@@ -79,7 +77,7 @@ def soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,f
 			else:
 				freq_high_clamped = min(freq_high, nyquist * 0.99)
 				sos = signal.butter(4, [freq_low / nyquist, freq_high_clamped / nyquist], btype='bandpass', output='sos')
-				print(f"Applying bandpass filter: {freq_low}–{freq_high_clamped:.0f} Hz")
+				print(f"Applying bandpass filter: {freq_low}\u2013{freq_high_clamped:.0f} Hz")
 		elif freq_low is not None:
 			if freq_low >= nyquist:
 				print(f"Warning: freq_low ({freq_low} Hz) >= Nyquist ({nyquist} Hz), skipping filter")
@@ -94,43 +92,41 @@ def soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,f
 
 	if apply_filter:
 		for i in range(nlevels):
-			for j in range(orient):
-				data[:,i,j] = signal.sosfiltfilt(sos, data[:,i,j])
+			for j in range(n_orient):
+				phase_signals[:, i, j] = signal.sosfiltfilt(sos, phase_signals[:, i, j])
 
-	shift_matrix=np.zeros((nlevels,orient))
-	ref_vector=data[:,ref_level,ref_orient].reshape(-1)
+	shift_matrix = np.zeros((nlevels, n_orient))
+	ref_vector = phase_signals[:, ref_level, ref_orient].reshape(-1)
 	for i in range(nlevels):
-		for j in range(orient):
-			shift_matrix[i,j]=maxTime(ref_vector,data[:,i,j].reshape(-1))
-	
-	sound_raw=np.zeros(frameCount)
-	for fc in range(frameCount):
+		for j in range(n_orient):
+			shift_matrix[i, j] = find_best_shift(ref_vector, phase_signals[:, i, j].reshape(-1))
+
+	sound_raw = np.zeros(frame_count)
+	for fc in range(frame_count):
 		for i in range(nlevels):
-			for j in range(orient):
-				sound_raw[fc]+=data[fc-int(shift_matrix[i,j]),i,j]
+			for j in range(n_orient):
+				sound_raw[fc] += phase_signals[fc - int(shift_matrix[i, j]), i, j]
+
 	p_min = np.min(sound_raw)
 	p_max = np.max(sound_raw)
 	if p_max == p_min:
 		print("Warning: no motion detected in video, output will be silent")
 		sound_data = np.zeros_like(sound_raw)
 	else:
-		sound_data=((2*sound_raw)-(p_min+p_max))/(p_max-p_min)
-	
-	return (sound_data)
+		sound_data = ((2 * sound_raw) - (p_min + p_max)) / (p_max - p_min)
+
+	return sound_data
 
 
 def main():
-	# Create the argument parser
-	parser = argparse.ArgumentParser(description='Motion Magnification using 2D DTCWT')
+	parser = argparse.ArgumentParser(description='Visual Microphone: Recover sound from video using 2D DTCWT')
 
-	# Add arguments
 	parser.add_argument('-i', '--input', required=True, help='Specify input video path')
 	parser.add_argument('-o', '--output', default='sound.wav', help='Specify output audio path (default: sound.wav)')
 	parser.add_argument('-fl', '--freq-low', type=float, default=None, help='Lower cutoff frequency in Hz for temporal bandpass filter')
 	parser.add_argument('-fh', '--freq-high', type=float, default=None, help='Upper cutoff frequency in Hz for temporal bandpass filter')
 	parser.add_argument('--roi', type=str, default=None, help='Region of interest as x,y,w,h (e.g. --roi 100,50,200,150)')
 
-	# Parse the command-line arguments
 	args = parser.parse_args()
 	filename = args.input
 	output_name = args.output
@@ -157,11 +153,11 @@ def main():
 		sys.exit(1)
 
 	fps = cap.get(cv2.CAP_PROP_FPS)
-	frameCount = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-	frameWidth = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-	frameHeight = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+	frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+	frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+	frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-	if frameCount <= 0:
+	if frame_count <= 0:
 		print("Error: video has no frames")
 		cap.release()
 		sys.exit(1)
@@ -170,10 +166,10 @@ def main():
 		print("Warning: could not determine FPS from video, defaulting to 30")
 		fps = 30
 
-	print(f"frameCount: {frameCount}, frameWidth: {frameWidth}, frameHeight: {frameHeight}, fps: {fps}")
+	print(f"frame_count: {frame_count}, frame_width: {frame_width}, frame_height: {frame_height}, fps: {fps}")
 
-	nlevels=3
-	min_dim = 2 ** nlevels  # minimum dimension for DTCWT (8 pixels for 3 levels)
+	nlevels = 3
+	min_dim = 2 ** nlevels
 
 	if roi is not None:
 		rx, ry, rw, rh = roi
@@ -181,8 +177,8 @@ def main():
 			print("Error: ROI values must be non-negative and width/height must be positive")
 			cap.release()
 			sys.exit(1)
-		if rx + rw > frameWidth or ry + rh > frameHeight:
-			print(f"Error: ROI ({rx},{ry},{rw},{rh}) exceeds frame dimensions ({frameWidth}x{frameHeight})")
+		if rx + rw > frame_width or ry + rh > frame_height:
+			print(f"Error: ROI ({rx},{ry},{rw},{rh}) exceeds frame dimensions ({frame_width}x{frame_height})")
 			cap.release()
 			sys.exit(1)
 		if rw < min_dim or rh < min_dim:
@@ -191,15 +187,17 @@ def main():
 			sys.exit(1)
 		print(f"Using ROI: x={rx}, y={ry}, w={rw}, h={rh}")
 
-	orient=6
-	ref_no=0
-	ref_level=0
-	ref_orient=0
+	n_orient = 6
+	ref_index = 0
+	ref_level = 0
+	ref_orient = 0
 
-	npTowav(soundfromvid(cap,frameCount,nlevels,orient,ref_no,ref_orient,ref_level,fps,freq_low,freq_high,roi), output_name, int(fps))
+	save_wav(
+		extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi),
+		output_name,
+		int(fps)
+	)
 
 
 if __name__ == "__main__":
-		main()
-
-
+	main()
