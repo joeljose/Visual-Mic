@@ -313,7 +313,7 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 
 Here's how `visualmic.py` implements the pipeline, with line references.
 
-### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction (lines 23–68)
+### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction (lines 22–66)
 
 Frames are streamed directly from the video file — each frame is read, transformed, and discarded immediately, so only one raw frame is in memory at a time. This enables processing of arbitrarily long videos without running out of memory. If an ROI is specified, each frame is cropped before the DTCWT decomposition, reducing computation and focusing on the vibrating object.
 
@@ -368,7 +368,7 @@ Phase wrapping ensures the difference always reflects the true small angular dis
 
 **Result:** `phase_signals[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
 
-### Step 3.5: Temporal Bandpass Filtering (lines 70–98, optional)
+### Step 3.5: Temporal Bandpass Filtering (lines 68–96, optional)
 
 When `-fl` and/or `-fh` are specified, a 4th-order Butterworth filter is applied to each of the 18 phase signals before cross-correlation:
 
@@ -387,7 +387,7 @@ for i in range(nlevels):
 - Skipped if video has fewer than 13 frames (minimum required for `filtfilt`)
 - If only `-fl` is given, acts as highpass; if only `-fh`, acts as lowpass
 
-### Step 4: Temporal Alignment via Cross-Correlation (lines 100–104)
+### Step 4: Temporal Alignment via Cross-Correlation (lines 98–102)
 
 ```python
 ref_vector = phase_signals[:, ref_level, ref_orient].reshape(-1)
@@ -396,7 +396,7 @@ for i in range(nlevels):
         shift_matrix[i, j] = find_best_shift(ref_vector, phase_signals[:, i, j].reshape(-1))
 ```
 
-The `find_best_shift` function (lines 12–14) uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
+The `find_best_shift` function (lines 11–13) uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
 
 ```python
 def find_best_shift(a, b):
@@ -404,7 +404,7 @@ def find_best_shift(a, b):
     return np.argmax(correlation) - (len(b) - 1)
 ```
 
-### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 106–110)
+### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 104–108)
 
 ```python
 for fc in range(frame_count):
@@ -413,7 +413,7 @@ for fc in range(frame_count):
             sound_raw[fc] += phase_signals[fc - int(shift_matrix[i, j]), i, j]
 ```
 
-### Step 6: Normalize to $[-1, 1]$ (lines 112–118)
+### Step 6: Normalize to $[-1, 1]$ (lines 110–116)
 
 ```python
 p_min = np.min(sound_raw)
@@ -426,7 +426,7 @@ else:
 
 Includes a guard against division by zero when no motion is detected.
 
-### Step 7: Output WAV (lines 17–20, called at line 189)
+### Step 7: Output WAV (lines 16–19, called at line 198)
 
 ```python
 def save_wav(samples, output_name, sample_rate):

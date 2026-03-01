@@ -132,6 +132,9 @@ def main():
 	output_name = args.output
 	freq_low = args.freq_low
 	freq_high = args.freq_high
+	if freq_low is not None and freq_high is not None and freq_low >= freq_high:
+		print(f"Error: freq-low ({freq_low} Hz) must be less than freq-high ({freq_high} Hz)")
+		sys.exit(1)
 	roi = None
 	if args.roi is not None:
 		try:

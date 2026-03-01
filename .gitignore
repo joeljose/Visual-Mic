@@ -1,1 +1,6 @@
 temp/
+__pycache__/
+*.pyc
+*.wav
+.venv/
+venv/

@@ -1,4 +1,4 @@
-scipy==1.7.1
-numpy==1.20.3
-dtcwt==0.12.0
-opencv-python==4.7.0.72
+scipy>=1.7.1
+numpy>=1.20.3
+dtcwt>=0.12.0
+opencv-python>=4.7.0
