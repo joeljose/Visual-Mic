@@ -61,7 +61,7 @@ You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l
    ```
    | Argument | Required | Description |
    |----------|----------|-------------|
-   | `-i`, `--input` | Yes | Path to input video file |
+   | `-i`, `--input` | Yes* | Path to input video file (*not required when using `--denoise-input`) |
    | `-o`, `--output` | No | Output audio path (default: `sound.wav`) |
    | `-fl`, `--freq-low` | No | Lower cutoff frequency in Hz for temporal bandpass filter |
    | `-fh`, `--freq-high` | No | Upper cutoff frequency in Hz for temporal bandpass filter |
@@ -362,14 +362,14 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 
 Here's how `visualmic.py` implements the pipeline, with line references.
 
-### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction (lines 22–66)
+### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction (lines 142–194)
 
 Frames are streamed directly from the video file — each frame is read, transformed, and discarded immediately, so only one raw frame is in memory at a time. This enables processing of arbitrarily long videos without running out of memory. If an ROI is specified, each frame is cropped before the DTCWT decomposition, reducing computation and focusing on the vibrating object.
 
 ```python
 def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, ..., roi=None):
     transform = dtcwt.Transform2d()
-    ref_frame = None
+    ref_conj = None
     phase_signals = []
 
     for fc in range(frame_count):
@@ -383,18 +383,14 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, re
         dtcwt_frame = transform.forward(gray, nlevels=nlevels)
 
         if fc == ref_index:
-            ref_frame = dtcwt_frame
+            ref_conj = [np.conj(dtcwt_frame.highpasses[level]) for level in range(nlevels)]
 
         frame_phases = np.zeros((nlevels, n_orient))
         for level in range(nlevels):
-            for angle in range(n_orient):
-                coeffs = dtcwt_frame.highpasses[level][:, :, angle]
-                ref_coeffs = ref_frame.highpasses[level][:, :, angle]
-                amp = np.abs(coeffs)
-                phase = np.angle(coeffs)
-                ref_phase = np.angle(ref_coeffs)
-                phase_diff = np.angle(np.exp(1j * (phase - ref_phase)))
-                frame_phases[level, angle] = np.sum(amp * amp * phase_diff)
+            coeffs = dtcwt_frame.highpasses[level]
+            amp = np.abs(coeffs)
+            phase_diff = np.angle(coeffs * ref_conj[level])
+            frame_phases[level, :] = np.sum(amp * amp * phase_diff, axis=(0, 1))
         phase_signals.append(frame_phases)
 
     phase_signals = np.array(phase_signals)  # shape: (frame_count, nlevels, n_orient)
@@ -408,16 +404,16 @@ Vectorized NumPy operations on entire 2D spatial slices:
 
 | Operation | Code | Corresponds to |
 |-----------|------|----------------|
-| Extract amplitude $A$ and phase $\phi$ | `np.abs(...)`, `np.angle(...)` | Step 2 of original |
-| Phase variation $\phi_v$ (wrapped to $[-\pi, \pi]$) | `np.angle(np.exp(1j * (phase - ref_phase)))` | Step 3 of original |
-| $A^2$-weighted accumulation | `amp * amp * (...)` | Step 4 of original |
-| Spatial sum $\sum_{x,y}$ | `np.sum(...)` | Step 4 of original |
+| Extract amplitude $A$ | `np.abs(coeffs)` | Step 2 of original |
+| Phase variation $\phi_v$ (wrapped to $[-\pi, \pi]$) | `np.angle(coeffs * ref_conj[level])` | Step 3 of original |
+| $A^2$-weighted accumulation | `amp * amp * phase_diff` | Step 4 of original |
+| Spatial sum $\sum_{x,y}$ | `np.sum(..., axis=(0, 1))` | Step 4 of original |
 
-Phase wrapping ensures the difference always reflects the true small angular displacement, even when phases cross the $\pm\pi$ boundary.
+The conjugate multiplication `coeffs * conj(ref)` computes the phase difference directly: `angle(z * conj(w)) = angle(z) - angle(w)`, automatically wrapped to $[-\pi, \pi]$. This is more numerically stable than computing phases separately and subtracting.
 
 **Result:** `phase_signals[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
 
-### Step 3.5: Temporal Bandpass Filtering (lines 68–96, optional)
+### Step 3.5: Temporal Bandpass Filtering (lines 89–118, optional)
 
 When `-fl` and/or `-fh` are specified, a 4th-order Butterworth filter is applied to each of the 18 phase signals before cross-correlation:
 
@@ -436,7 +432,7 @@ for i in range(nlevels):
 - Skipped if video has fewer than 13 frames (minimum required for `filtfilt`)
 - If only `-fl` is given, acts as highpass; if only `-fh`, acts as lowpass
 
-### Step 4: Temporal Alignment via Cross-Correlation (lines 98–102)
+### Step 4: Temporal Alignment via Cross-Correlation (lines 120–124)
 
 ```python
 ref_vector = phase_signals[:, ref_level, ref_orient].reshape(-1)
@@ -445,7 +441,7 @@ for i in range(nlevels):
         shift_matrix[i, j] = find_best_shift(ref_vector, phase_signals[:, i, j].reshape(-1))
 ```
 
-The `find_best_shift` function (lines 11–13) uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
+The `find_best_shift` function (lines 26–28) uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
 
 ```python
 def find_best_shift(a, b):
@@ -453,16 +449,16 @@ def find_best_shift(a, b):
     return np.argmax(correlation) - (len(b) - 1)
 ```
 
-### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 104–108)
+### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 126–129)
 
 ```python
-for fc in range(frame_count):
-    for i in range(nlevels):
-        for j in range(n_orient):
-            sound_raw[fc] += phase_signals[fc - int(shift_matrix[i, j]), i, j]
+sound_raw = np.zeros(frame_count)
+for i in range(nlevels):
+    for j in range(n_orient):
+        sound_raw += np.roll(phase_signals[:, i, j], int(shift_matrix[i, j]))
 ```
 
-### Step 6: Normalize to $[-1, 1]$ (lines 110–116)
+### Step 6: Normalize to $[-1, 1]$ (lines 131–137)
 
 ```python
 p_min = np.min(sound_raw)
@@ -475,7 +471,7 @@ else:
 
 Includes a guard against division by zero when no motion is detected.
 
-### Step 7: Output WAV (lines 16–19, called at line 198)
+### Step 7: Output WAV (lines 31–34, called at line 456)
 
 ```python
 def save_wav(samples, output_name, sample_rate):
@@ -545,7 +541,18 @@ The vibration signal is present across all scales (the whole surface moves), but
 
 # Part 4: Denoising
 
-Denoising is a separate post-processing step. We apply image-based morphological filtering to the audio spectrograms, and then reconstruct audio from the processed spectrogram. Since denoising involves multiple stages, it is maintained as a separate project: [audio_denoising](https://github.com/joeljose/audio_denoising)
+Two denoising methods are available as post-processing, applied to the recovered audio via `--denoise`:
+
+- **Spectral subtraction** (`--denoise spectral`): Estimates a noise profile from the first ~0.1 seconds of audio (assumed to be noise-only), then subtracts it from the STFT magnitude across all frames. Simple and fast, but can introduce "musical noise" artifacts.
+
+- **Morphological spectrogram filtering** (`--denoise morphological`): Converts the STFT magnitude to a grayscale image, applies binary thresholding followed by morphological erosion and dilation to create a signal/noise mask, then amplifies signal regions and attenuates noise regions. Based on the approach from [audio_denoising](https://github.com/joeljose/audio_denoising).
+
+Both methods can also be used standalone on existing WAV files via `--denoise-input`:
+
+```sh
+python visualmic.py --denoise-input sound.wav --denoise spectral -o denoised.wav
+python visualmic.py --denoise-input sound.wav --denoise morphological -o denoised_morph.wav
+```
 
 ---
 
