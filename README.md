@@ -156,22 +156,6 @@ The filters can be analytically rotated to any orientation without recomputing �
 
 ## 1.5 The Original Algorithm — Step by Step
 
-```mermaid
-flowchart TD
-    A["High-Speed Video V(x, y, t)"] --> B["Complex Steerable Pyramid<br>(per frame)"]
-    B --> C["Extract Amplitude A<br>and Phase phi"]
-    C --> D["Phase Variation<br>phi_v(t) = phi(t) - phi(t0)"]
-    D --> E["A-squared Weighted Spatial Average<br>Phi(s, theta, t) = Sum A-squared * phi_v"]
-    E --> F["18 Sub-band Time Signals"]
-    F --> G["Cross-Correlation Alignment"]
-    G --> H["Sum Across All Sub-bands"]
-    H --> I["Normalize to -1, 1"]
-    I --> J["Output WAV<br>(sample rate = FPS)"]
-
-    style A fill:#4a90d9,color:#fff
-    style J fill:#2ecc71,color:#fff
-```
-
 ### Input
 
 - High-speed video $V(x, y, t)$ with $N$ frames at $F$ fps
@@ -311,22 +295,6 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 - Still provides good directional selectivity
 - Phase information is reliable for motion estimation
 
-```mermaid
-flowchart TD
-    A["Grayscale Frame<br>H x W"] --> B["2D DTCWT"]
-    B --> L0["Level 0 - finest<br>6 complex sub-bands<br>H/2 x W/2"]
-    B --> L1["Level 1 - middle<br>6 complex sub-bands<br>H/4 x W/4"]
-    B --> L2["Level 2 - coarsest<br>6 complex sub-bands<br>H/8 x W/8"]
-    L0 --> O0["+/-15  +/-45  +/-75 degrees"]
-    L1 --> O1["+/-15  +/-45  +/-75 degrees"]
-    L2 --> O2["+/-15  +/-45  +/-75 degrees"]
-
-    style A fill:#4a90d9,color:#fff
-    style L0 fill:#e67e22,color:#fff
-    style L1 fill:#e67e22,color:#fff
-    style L2 fill:#e67e22,color:#fff
-```
-
 ## 2.2 DTCWT vs Complex Steerable Pyramid
 
 | Property | Complex Steerable Pyramid | 2D DTCWT |
@@ -344,33 +312,6 @@ flowchart TD
 ## 2.3 Our Algorithm — Mapped to Code
 
 Here's how `visualmic.py` implements the pipeline, with line references.
-
-```mermaid
-flowchart TD
-    A["Input Video"] --> B["Read Frame"]
-    B --> C["Convert to Grayscale"]
-    C --> D{"ROI specified?"}
-    D -->|Yes| E["Crop to ROI"]
-    D -->|No| F
-    E --> F["2D DTCWT Forward Transform"]
-    F --> G["Extract Amplitude A and Phase phi"]
-    G --> H["Wrapped Phase Diff"]
-    H --> I["A-squared Weighted Spatial Sum"]
-    I --> J{"More frames?"}
-    J -->|Yes| B
-    J -->|No| K{"Bandpass filter?"}
-    K -->|"-fl / -fh given"| L["Butterworth sosfiltfilt"]
-    K -->|No| M
-    L --> M["Cross-Correlation Alignment"]
-    M --> N["Sum Across 18 Sub-bands"]
-    N --> O["Normalize to -1, 1"]
-    O --> P["save_wav<br>sample rate = FPS"]
-
-    style A fill:#4a90d9,color:#fff
-    style P fill:#2ecc71,color:#fff
-    style L fill:#9b59b6,color:#fff
-    style E fill:#e67e22,color:#fff
-```
 
 ### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction (lines 23–68)
 
