@@ -298,7 +298,7 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 
 Here's how `visualmic.py` implements the pipeline, with line references.
 
-### Step 1: Load Video (lines 84–112)
+### Step 1: Load Video (lines 66–88)
 
 ```python
 cap = cv2.VideoCapture(filename)
@@ -310,7 +310,7 @@ for fc in range(frameCount):
 
 All frames loaded into memory as grayscale.
 
-### Step 2: Initialize DTCWT and Reference Frame (lines 28–29)
+### Step 2: Initialize DTCWT and Reference Frame (lines 22–23)
 
 ```python
 tr = dtcwt.Transform2d()
@@ -323,32 +323,33 @@ ref_frame = tr.forward(input_data[ref_no], nlevels=nlevels)  # ref_no = 0
   - `pyramid.highpasses[level]` has shape $(H_{\text{level}}, W_{\text{level}}, 6)$
   - Each value is a **complex number** encoding amplitude and phase
 
-### Step 3: Extract Phase Variation and Spatial Average (lines 32–48)
+### Step 3: Extract Phase Variation and Spatial Average (lines 26–35)
 
 ```python
 for fc in range(frameCount):
     frame = tr.forward(input_data[fc], nlevels=nlevels)
     for level in range(nlevels):           # 3 scales
         for angle in range(orient):         # 6 orientations
-            for x in range(xmax):           # spatial x
-                for y in range(ymax):       # spatial y
-                    amp, phase = cmath.polar(frame.highpasses[level][x][y][angle])
-                    ref_phase = cmath.polar(ref_frame.highpasses[level][x][y][angle])[1]
-                    data[fc, level, angle] += (amp*amp) * (phase - ref_phase)
+            coeffs = frame.highpasses[level][:,:,angle]
+            ref_coeffs = ref_frame.highpasses[level][:,:,angle]
+            amp = np.abs(coeffs)
+            phase = np.angle(coeffs)
+            ref_phase = np.angle(ref_coeffs)
+            data[fc,level,angle] = np.sum(amp*amp * (phase - ref_phase))
 ```
 
-This loop simultaneously performs:
+Vectorized NumPy operations on entire 2D spatial slices replace per-pixel Python loops:
 
 | Operation | Code | Corresponds to |
 |-----------|------|----------------|
-| Extract amplitude $A$ and phase $\phi$ | `cmath.polar(...)` | Step 2 of original |
+| Extract amplitude $A$ and phase $\phi$ | `np.abs(...)`, `np.angle(...)` | Step 2 of original |
 | Phase variation $\phi_v = \phi - \phi_{\text{ref}}$ | `phase - ref_phase` | Step 3 of original |
-| $A^2$-weighted accumulation | `(amp*amp) * (...)` | Step 4 of original |
-| Spatial sum $\sum_{x,y}$ | `+=` over x, y loops | Step 4 of original |
+| $A^2$-weighted accumulation | `amp*amp * (...)` | Step 4 of original |
+| Spatial sum $\sum_{x,y}$ | `np.sum(...)` | Step 4 of original |
 
 **Result:** `data[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
 
-### Step 4: Temporal Alignment via Cross-Correlation (lines 50–54)
+### Step 4: Temporal Alignment via Cross-Correlation (lines 37–41)
 
 ```python
 ref_vector = data[:, ref_level, ref_orient].reshape(-1)
@@ -357,16 +358,15 @@ for i in range(nlevels):
         shift_matrix[i,j] = maxTime(ref_vector, data[:,i,j].reshape(-1))
 ```
 
-The `maxTime` function (lines 10–15) finds the circular shift maximizing cross-correlation:
+The `maxTime` function (lines 8–10) uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
 
 ```python
 def maxTime(a, b):
-    for shift in range(length):
-        c[shift] = np.dot(a, np.roll(b, shift))
-    return np.argmax(c)
+    c = signal.correlate(a, b, mode='full')
+    return np.argmax(c) - (len(b) - 1)
 ```
 
-### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 56–60)
+### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 44–47)
 
 ```python
 for fc in range(frameCount):
@@ -375,19 +375,23 @@ for fc in range(frameCount):
             sound_raw[fc] += data[fc - int(shift_matrix[i,j]), i, j]
 ```
 
-### Step 6: Normalize to $[-1, 1]$ (lines 61–68)
+### Step 6: Normalize to $[-1, 1]$ (lines 48–50)
 
 ```python
+p_min = np.min(sound_raw)
+p_max = np.max(sound_raw)
 sound_data = ((2 * sound_raw) - (p_min + p_max)) / (p_max - p_min)
 ```
 
-### Step 7: Output WAV (lines 17–24)
+### Step 7: Output WAV (lines 12–18)
 
 ```python
-sps = 1  # BUG: should be fps from the video
-waveform_integers = np.int16(np_file * 32767)
-write(output_name, sps, waveform_integers)
+def npTowav(np_file, output_name, sps):
+    waveform_integers = np.int16(np_file * 32767)
+    write(output_name, sps, waveform_integers)
 ```
+
+The sampling rate `sps` is set to the video's FPS, ensuring the output audio matches the temporal resolution of the input video.
 
 ## 2.4 Parameters Used
 
