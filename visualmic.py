@@ -124,6 +124,7 @@ def main():
 	parser.add_argument('-o', '--output', default='sound.wav', help='Specify output audio path (default: sound.wav)')
 	parser.add_argument('-fl', '--freq-low', type=float, default=None, help='Lower cutoff frequency in Hz for temporal bandpass filter')
 	parser.add_argument('-fh', '--freq-high', type=float, default=None, help='Upper cutoff frequency in Hz for temporal bandpass filter')
+	parser.add_argument('--fps', type=float, default=None, help='Override video frame rate (Hz) for audio output sample rate')
 	parser.add_argument('--roi', type=str, default=None, help='Region of interest as x,y,w,h (e.g. --roi 100,50,200,150)')
 
 	args = parser.parse_args()
@@ -167,6 +168,14 @@ def main():
 	if fps <= 0:
 		print("Warning: could not determine FPS from video, defaulting to 30")
 		fps = 30
+
+	if args.fps is not None:
+		if args.fps <= 0:
+			print("Error: --fps must be positive")
+			cap.release()
+			sys.exit(1)
+		print(f"Overriding video FPS ({fps}) with --fps {args.fps}")
+		fps = args.fps
 
 	print(f"frame_count: {frame_count}, frame_width: {frame_width}, frame_height: {frame_height}, fps: {fps}")
 

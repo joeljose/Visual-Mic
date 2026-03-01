@@ -56,6 +56,7 @@ You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l
    python visualmic.py -i testvid.avi -o recovered_audio.wav
    python visualmic.py -i testvid.avi -fl 80 -fh 1000
    python visualmic.py -i testvid.avi --roi 100,50,200,150
+   python visualmic.py -i Chips1-2200Hz-Mary_Had-input.avi --fps 2200
    ```
    | Argument | Required | Description |
    |----------|----------|-------------|
@@ -63,9 +64,12 @@ You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l
    | `-o`, `--output` | No | Output audio path (default: `sound.wav`) |
    | `-fl`, `--freq-low` | No | Lower cutoff frequency in Hz for temporal bandpass filter |
    | `-fh`, `--freq-high` | No | Upper cutoff frequency in Hz for temporal bandpass filter |
+   | `--fps` | No | Override the video frame rate (Hz) for audio output sample rate |
    | `--roi` | No | Region of interest as `x,y,w,h` — crops each frame before processing |
 
    When `-fl` and/or `-fh` are specified, a Butterworth filter is applied to the phase signals before audio reconstruction, rejecting low-frequency drift and high-frequency noise to improve output quality.
+
+   When `--fps` is specified, the given value is used as the audio sample rate instead of the frame rate reported by the video container. This is necessary for high-speed camera footage where the container frame rate does not reflect the actual capture rate. For example, the MIT CSAIL Chips1 video was captured at 2200 frames per second, but the AVI container reports ~30 fps. Without `--fps 2200`, the output audio would be sampled at 30 Hz and unplayable.
 
    When `--roi` is specified, each frame is cropped to the given rectangle before the DTCWT decomposition. This reduces computation and can improve SNR by focusing on the vibrating object (e.g., the bag of chips) and excluding background regions.
 
