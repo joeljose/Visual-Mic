@@ -21,8 +21,9 @@ def save_wav(samples, output_name, sample_rate):
 
 def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None):
 	transform = dtcwt.Transform2d()
-	ref_frame = None
+	ref_conj = None
 	phase_signals = []
+	progress_interval = max(1, frame_count // 10)
 
 	for fc in range(frame_count):
 		ret, raw_frame = cap.read()
@@ -37,23 +38,22 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, re
 		dtcwt_frame = transform.forward(gray, nlevels=nlevels)
 
 		if fc == ref_index:
-			ref_frame = dtcwt_frame
+			ref_conj = [np.conj(dtcwt_frame.highpasses[level]) for level in range(nlevels)]
 
-		if ref_frame is None:
+		if ref_conj is None:
 			phase_signals.append(np.zeros((nlevels, n_orient)))
 			continue
 
 		frame_phases = np.zeros((nlevels, n_orient))
 		for level in range(nlevels):
-			for angle in range(n_orient):
-				coeffs = dtcwt_frame.highpasses[level][:, :, angle]
-				ref_coeffs = ref_frame.highpasses[level][:, :, angle]
-				amp = np.abs(coeffs)
-				phase = np.angle(coeffs)
-				ref_phase = np.angle(ref_coeffs)
-				phase_diff = np.angle(np.exp(1j * (phase - ref_phase)))
-				frame_phases[level, angle] = np.sum(amp * amp * phase_diff)
+			coeffs = dtcwt_frame.highpasses[level]
+			amp = np.abs(coeffs)
+			phase_diff = np.angle(coeffs * ref_conj[level])
+			frame_phases[level, :] = np.sum(amp * amp * phase_diff, axis=(0, 1))
 		phase_signals.append(frame_phases)
+
+		if (fc + 1) % progress_interval == 0 or fc == frame_count - 1:
+			print(f"Processing: {fc + 1}/{frame_count} frames ({100 * (fc + 1) // frame_count}%)")
 
 	cap.release()
 
@@ -102,10 +102,9 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, re
 			shift_matrix[i, j] = find_best_shift(ref_vector, phase_signals[:, i, j].reshape(-1))
 
 	sound_raw = np.zeros(frame_count)
-	for fc in range(frame_count):
-		for i in range(nlevels):
-			for j in range(n_orient):
-				sound_raw[fc] += phase_signals[fc - int(shift_matrix[i, j]), i, j]
+	for i in range(nlevels):
+		for j in range(n_orient):
+			sound_raw += np.roll(phase_signals[:, i, j], int(shift_matrix[i, j]))
 
 	p_min = np.min(sound_raw)
 	p_max = np.max(sound_raw)
