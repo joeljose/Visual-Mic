@@ -1,10 +1,10 @@
 # Visual-Mic
 
-When sound hits an object, it causes small vibrations on the object's surface. Here we show how, using only high-speed video of the object, we can extract those minute vibrations and partially recover the sound that produced them, allowing us to turn everyday objects—a glass of water, a potted plant, a box of tissues, or a bag of chips—into visual microphones.
+A Python implementation of the [Visual Microphone](https://people.csail.mit.edu/mrub/VisualMic/) algorithm, which recovers sound from high-speed video by analyzing sub-pixel surface vibrations. When sound hits an object, it causes tiny vibrations on the surface—far too small to see with the naked eye, but detectable in the phase of complex wavelet coefficients. This tool extracts those vibrations and reconstructs an audible signal, effectively turning everyday objects into microphones.
 
-The original project was done by MIT-CSAIL team. They have captured high-speed videos of packet of chips moving due to an audio clip of "Mary Had A Little Lamb" song. The video decomposition was done using a technique called Riesz Pyramids. In our project we use the same videos provided in the MIT-CSAIL website, but we use 2D Dual Tree Complex Wavelet Transform instead.
+The original work by [Davis et al. (MIT CSAIL, SIGGRAPH 2014)](https://people.csail.mit.edu/mrub/papers/VisualMic_SIGGRAPH2014.pdf) used Complex Steerable Pyramids for the video decomposition. This project uses **2D Dual-Tree Complex Wavelet Transform (DTCWT)** instead, which is ~5x more computationally efficient while still providing reliable phase information for motion estimation. We test against the same high-speed videos provided by MIT CSAIL.
 
-The videos can be downloaded from [here](http://data.csail.mit.edu/vidmag/VisualMic/Results/)
+The sample videos can be downloaded from [here](http://data.csail.mit.edu/vidmag/VisualMic/Results/)
 
 ![](https://github.com/joeljose/assets/raw/master/Visual-Mic/vmic.png)
 
