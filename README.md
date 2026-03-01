@@ -298,19 +298,32 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 
 Here's how `visualmic.py` implements the pipeline, with line references.
 
-### Step 1: Load Video (lines 66–88)
+### Step 1: Load Video (lines 73–121)
 
 ```python
+if not os.path.isfile(filename):
+    print(f"Error: file '{filename}' not found")
+    sys.exit(1)
+
 cap = cv2.VideoCapture(filename)
+if not cap.isOpened():
+    print(f"Error: could not open '{filename}' as video")
+    sys.exit(1)
+
+# ... FPS/frameCount validation ...
+
 for fc in range(frameCount):
     ret, frame = cap.read()
+    if not ret or frame is None:
+        print(f"Warning: could not read frame {fc}, stopping at {len(input_data)} frames")
+        break
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     input_data.append(gray)
 ```
 
-All frames loaded into memory as grayscale.
+Input validation checks: file existence, video format, frame count, FPS (defaults to 30 if unreported). Frames are loaded into memory as grayscale, with graceful handling of mid-video read failures.
 
-### Step 2: Initialize DTCWT and Reference Frame (lines 22–23)
+### Step 2: Initialize DTCWT and Reference Frame (lines 24–25)
 
 ```python
 tr = dtcwt.Transform2d()
@@ -323,7 +336,7 @@ ref_frame = tr.forward(input_data[ref_no], nlevels=nlevels)  # ref_no = 0
   - `pyramid.highpasses[level]` has shape $(H_{\text{level}}, W_{\text{level}}, 6)$
   - Each value is a **complex number** encoding amplitude and phase
 
-### Step 3: Extract Phase Variation and Spatial Average (lines 26–35)
+### Step 3: Extract Phase Variation and Spatial Average (lines 28–38)
 
 ```python
 for fc in range(frameCount):
@@ -335,21 +348,24 @@ for fc in range(frameCount):
             amp = np.abs(coeffs)
             phase = np.angle(coeffs)
             ref_phase = np.angle(ref_coeffs)
-            data[fc,level,angle] = np.sum(amp*amp * (phase - ref_phase))
+            phase_diff = np.angle(np.exp(1j * (phase - ref_phase)))
+            data[fc,level,angle] = np.sum(amp*amp * phase_diff)
 ```
 
-Vectorized NumPy operations on entire 2D spatial slices replace per-pixel Python loops:
+Vectorized NumPy operations on entire 2D spatial slices:
 
 | Operation | Code | Corresponds to |
 |-----------|------|----------------|
 | Extract amplitude $A$ and phase $\phi$ | `np.abs(...)`, `np.angle(...)` | Step 2 of original |
-| Phase variation $\phi_v = \phi - \phi_{\text{ref}}$ | `phase - ref_phase` | Step 3 of original |
+| Phase variation $\phi_v$ (wrapped to $[-\pi, \pi]$) | `np.angle(np.exp(1j * (phase - ref_phase)))` | Step 3 of original |
 | $A^2$-weighted accumulation | `amp*amp * (...)` | Step 4 of original |
 | Spatial sum $\sum_{x,y}$ | `np.sum(...)` | Step 4 of original |
 
+Phase wrapping ensures the difference always reflects the true small angular displacement, even when phases cross the $\pm\pi$ boundary.
+
 **Result:** `data[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
 
-### Step 4: Temporal Alignment via Cross-Correlation (lines 37–41)
+### Step 4: Temporal Alignment via Cross-Correlation (lines 40–44)
 
 ```python
 ref_vector = data[:, ref_level, ref_orient].reshape(-1)
@@ -358,7 +374,7 @@ for i in range(nlevels):
         shift_matrix[i,j] = maxTime(ref_vector, data[:,i,j].reshape(-1))
 ```
 
-The `maxTime` function (lines 8–10) uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
+The `maxTime` function (lines 10–12) uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
 
 ```python
 def maxTime(a, b):
@@ -366,7 +382,7 @@ def maxTime(a, b):
     return np.argmax(c) - (len(b) - 1)
 ```
 
-### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 44–47)
+### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 46–50)
 
 ```python
 for fc in range(frameCount):
@@ -375,15 +391,20 @@ for fc in range(frameCount):
             sound_raw[fc] += data[fc - int(shift_matrix[i,j]), i, j]
 ```
 
-### Step 6: Normalize to $[-1, 1]$ (lines 48–50)
+### Step 6: Normalize to $[-1, 1]$ (lines 51–57)
 
 ```python
 p_min = np.min(sound_raw)
 p_max = np.max(sound_raw)
-sound_data = ((2 * sound_raw) - (p_min + p_max)) / (p_max - p_min)
+if p_max == p_min:
+    sound_data = np.zeros_like(sound_raw)  # silent output if no motion
+else:
+    sound_data = ((2 * sound_raw) - (p_min + p_max)) / (p_max - p_min)
 ```
 
-### Step 7: Output WAV (lines 12–18)
+Includes a guard against division by zero when no motion is detected.
+
+### Step 7: Output WAV (lines 14–20)
 
 ```python
 def npTowav(np_file, output_name, sps):
