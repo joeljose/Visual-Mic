@@ -69,6 +69,20 @@ You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l
 
    When `--roi` is specified, each frame is cropped to the given rectangle before the DTCWT decomposition. This reduces computation and can improve SNR by focusing on the vibrating object (e.g., the bag of chips) and excluding background regions.
 
+### C. Running with Docker (alternative)
+
+No Python setup needed — just Docker.
+
+1. Build the image (uses your host UID/GID so output files aren't owned by root):
+   ```sh
+   docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t visual-mic .
+   ```
+2. Run (mount the directory containing your video):
+   ```sh
+   docker run --rm -v /path/to/videos:/data visual-mic -i /data/testvid.avi -o /data/sound.wav
+   ```
+   All the same arguments (`-fl`, `-fh`, `--roi`, etc.) work exactly as described above.
+
 ---
 
 # Part 1: The Original Work (Davis et al., SIGGRAPH 2014)
