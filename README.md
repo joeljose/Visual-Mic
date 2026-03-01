@@ -4,7 +4,7 @@ A Python implementation of the [Visual Microphone](https://people.csail.mit.edu/
 
 The original work by [Davis et al. (MIT CSAIL, SIGGRAPH 2014)](https://people.csail.mit.edu/mrub/papers/VisualMic_SIGGRAPH2014.pdf) used Complex Steerable Pyramids for the video decomposition. This project uses **2D Dual-Tree Complex Wavelet Transform (DTCWT)** instead, which is ~5x more computationally efficient while still providing reliable phase information for motion estimation. We test against the same high-speed videos provided by MIT CSAIL.
 
-The sample videos can be downloaded from [here](http://data.csail.mit.edu/vidmag/VisualMic/Results/)
+The sample videos can be downloaded from [here](http://data.csail.mit.edu/vidmag/VisualMic/Results/). For example, `Chips1-2200Hz-Mary_Had-input.avi` is a high-speed video of a bag of chips vibrating to "Mary Had A Little Lamb" (704x704, 22,859 frames captured at 2200 fps, ~14 GB). **Note:** the AVI container reports ~30 fps, but the actual capture rate is 2200 Hz — use `--fps 2200` when running `visualmic.py` to get the correct audio sample rate.
 
 ![](https://github.com/joeljose/assets/raw/master/Visual-Mic/vmic.png)
 
