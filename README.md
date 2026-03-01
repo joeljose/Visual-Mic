@@ -73,15 +73,15 @@ You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l
 
 No Python setup needed — just Docker.
 
-1. Build the image (uses your host UID/GID so output files aren't owned by root):
+1. Build the image (automatically picks up your username, UID, and GID):
    ```sh
-   docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t visual-mic .
+   ./docker-build.sh
    ```
 2. Run (mount the directory containing your video):
    ```sh
    docker run --rm -v /path/to/videos:/data visual-mic -i /data/testvid.avi -o /data/sound.wav
    ```
-   All the same arguments (`-fl`, `-fh`, `--roi`, etc.) work exactly as described above.
+   All the same arguments (`-fl`, `-fh`, `--roi`, etc.) work exactly as described above. Output files will be owned by your host user.
 
 ---
 

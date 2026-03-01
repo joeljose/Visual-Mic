@@ -4,11 +4,12 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends libgl1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
-ARG UID=1000
-ARG GID=1000
+ARG UID
+ARG GID
+ARG UNAME
 
-RUN groupadd -g ${GID} vmic && \
-    useradd -m -u ${UID} -g ${GID} vmic
+RUN groupadd -g ${GID} ${UNAME} && \
+    useradd -m -u ${UID} -g ${GID} ${UNAME}
 
 WORKDIR /app
 
@@ -17,6 +18,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY visualmic.py .
 
-USER vmic
+USER ${UNAME}
 
 ENTRYPOINT ["python", "visualmic.py"]
