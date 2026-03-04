@@ -6,7 +6,7 @@ The original work by [Davis et al. (MIT CSAIL, SIGGRAPH 2014)](https://people.cs
 
 The sample videos can be downloaded from [here](http://data.csail.mit.edu/vidmag/VisualMic/Results/). For example, `Chips1-2200Hz-Mary_Had-input.avi` is a high-speed video of a bag of chips vibrating to "Mary Had A Little Lamb" (704x704, 22,859 frames captured at 2200 fps, ~14 GB). **Note:** the AVI container reports ~30 fps, but the actual capture rate is 2200 Hz — use `--fps 2200` when running `visualmic.py` to get the correct audio sample rate.
 
-![](https://github.com/joeljose/assets/raw/master/Visual-Mic/vmic.png)
+![](assets/vmic.png)
 
 ---
 
@@ -598,8 +598,8 @@ python visualmic.py --denoise-input sound.wav --denoise morphological -o denoise
 ---
 
 ## Follow Me
-<a href="https://twitter.com/joelk1jose" target="_blank"><img class="ai-subscribed-social-icon" src="https://github.com/joeljose/assets/blob/master/images/tw.png" width="30"></a>
-<a href="https://github.com/joeljose" target="_blank"><img class="ai-subscribed-social-icon" src="https://github.com/joeljose/assets/blob/master/images/gthb.png" width="30"></a>
-<a href="https://www.linkedin.com/in/joel-jose-527b80102/" target="_blank"><img class="ai-subscribed-social-icon" src="https://github.com/joeljose/assets/blob/master/images/lnkdn.png" width="30"></a>
+<a href="https://twitter.com/joelk1jose" target="_blank"><img class="ai-subscribed-social-icon" src="assets/tw.png" width="30"></a>
+<a href="https://github.com/joeljose" target="_blank"><img class="ai-subscribed-social-icon" src="assets/gthb.png" width="30"></a>
+<a href="https://www.linkedin.com/in/joel-jose-527b80102/" target="_blank"><img class="ai-subscribed-social-icon" src="assets/lnkdn.png" width="30"></a>
 
 <h3 align="center">Show your support by starring the repository 🙂</h3>
