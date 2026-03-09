@@ -598,7 +598,7 @@ python visualmic.py --denoise-input sound.wav --denoise morphological -o denoise
 ---
 
 ## Follow Me
-<a href="https://twitter.com/joelk1jose" target="_blank"><img class="ai-subscribed-social-icon" src=".github/images/tw.png" width="30"></a>
+<a href="https://x.com/joelk1jose" target="_blank"><img class="ai-subscribed-social-icon" src=".github/images/x.png" width="30"></a>
 <a href="https://github.com/joeljose" target="_blank"><img class="ai-subscribed-social-icon" src=".github/images/gthb.png" width="30"></a>
 <a href="https://www.linkedin.com/in/joel-jose-527b80102/" target="_blank"><img class="ai-subscribed-social-icon" src=".github/images/lnkdn.png" width="30"></a>
 
