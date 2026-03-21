@@ -1,12 +1,24 @@
+"""
+Visual Microphone: Recover sound from video using 2D DTCWT.
+
+Recovers sound from high-speed video by analyzing sub-pixel surface vibrations.
+Uses the phase of complex wavelet coefficients to detect motion far too small
+to see with the naked eye, then reconstructs an audible signal.
+
+Based on: Davis et al., "The Visual Microphone: Passive Recovery of Sound
+from Video", ACM Transactions on Graphics (SIGGRAPH 2014).
+"""
+
+__version__ = "2.0.0"
+
 import argparse
 import os
 import sys
 import time
+
 from scipy import signal
-from scipy import ndimage
 import numpy as np
 import cv2
-from scipy.io.wavfile import read as read_wav
 from scipy.io.wavfile import write
 
 
@@ -32,58 +44,6 @@ def save_wav(samples, output_name, sample_rate):
 	waveform_integers = np.int16(samples * 32767)
 	write(output_name, sample_rate, waveform_integers)
 	print(f"Output saved to {output_name}")
-
-
-def denoise_spectral(samples, fs, noise_duration=0.1):
-	f, t, Zxx = signal.stft(samples, fs=fs, nperseg=512)
-	magnitude = np.abs(Zxx)
-	phase = np.angle(Zxx)
-
-	# Estimate noise from first noise_duration seconds
-	noise_frames = max(1, int(noise_duration * fs / (512 // 4)))
-	noise_profile = np.mean(magnitude[:, :noise_frames], axis=1, keepdims=True)
-
-	# Subtract noise, floor at zero
-	clean_mag = np.maximum(magnitude - noise_profile, 0.0)
-
-	# Reconstruct with original phase
-	clean_Zxx = clean_mag * np.exp(1j * phase)
-	_, reconstructed = signal.istft(clean_Zxx, fs=fs, nperseg=512)
-
-	# Normalize to [-1, 1]
-	peak = np.max(np.abs(reconstructed))
-	if peak > 0:
-		reconstructed = reconstructed / peak
-	return reconstructed
-
-
-def denoise_morphological(samples, fs, threshold=20, amp=10):
-	f, t, Zxx = signal.stft(samples, fs=fs, nperseg=512)
-	magnitude = np.abs(Zxx)
-
-	# Convert to grayscale (0-255)
-	mag_max = np.max(magnitude)
-	if mag_max == 0:
-		return samples
-	gray = magnitude * (255.0 / mag_max)
-
-	# Binary threshold
-	mask = gray >= threshold
-
-	# Morphological erosion then dilation
-	mask = ndimage.binary_erosion(mask, iterations=1)
-	mask = ndimage.binary_dilation(mask, iterations=2)
-
-	# Apply mask: amplify signal, attenuate noise
-	masked_Zxx = np.where(mask, Zxx * amp, Zxx / amp)
-
-	_, reconstructed = signal.istft(masked_Zxx, fs=fs, nperseg=512)
-
-	# Normalize to [-1, 1]
-	peak = np.max(np.abs(reconstructed))
-	if peak > 0:
-		reconstructed = reconstructed / peak
-	return reconstructed
 
 
 def postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref_level, ref_orient, fps, freq_low=None, freq_high=None):
@@ -304,45 +264,21 @@ def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient
 def main():
 	parser = argparse.ArgumentParser(description='Visual Microphone: Recover sound from video using 2D DTCWT')
 
-	parser.add_argument('-i', '--input', default=None, help='Specify input video path')
-	parser.add_argument('-o', '--output', default='sound.wav', help='Specify output audio path (default: sound.wav)')
+	parser.add_argument(
+		'--version', action='version',
+		version=f'%(prog)s {__version__}'
+	)
+	parser.add_argument('-i', '--input', required=True, help='Input video path')
+	parser.add_argument('-o', '--output', default='sound.wav', help='Output audio path (default: sound.wav)')
 	parser.add_argument('-fl', '--freq-low', type=float, default=None, help='Lower cutoff frequency in Hz for temporal bandpass filter')
 	parser.add_argument('-fh', '--freq-high', type=float, default=None, help='Upper cutoff frequency in Hz for temporal bandpass filter')
 	parser.add_argument('--fps', type=float, default=None, help='Override video frame rate (Hz) for audio output sample rate')
 	parser.add_argument('--roi', type=str, default=None, help='Region of interest as x,y,w,h (e.g. --roi 100,50,200,150)')
 	parser.add_argument('--gpu', action='store_true', help='Use GPU-accelerated DTCWT (requires CUDA and pytorch_wavelets)')
 	parser.add_argument('--batch-size', type=int, default=16, help='Frames per GPU batch (default: 16, GPU mode only)')
-	parser.add_argument('--denoise', choices=['spectral', 'morphological'], default=None, help='Audio denoising method (applied after reconstruction)')
-	parser.add_argument('--denoise-input', type=str, default=None, help='Denoise an existing WAV file instead of processing video')
 
 	args = parser.parse_args()
 	pipeline_start = time.time()
-
-	# Standalone denoise mode
-	if args.denoise_input is not None:
-		if args.denoise is None:
-			print("Error: --denoise-input requires --denoise {spectral,morphological}")
-			sys.exit(1)
-		if not os.path.isfile(args.denoise_input):
-			print(f"Error: file '{args.denoise_input}' not found")
-			sys.exit(1)
-		sr, wav_data = read_wav(args.denoise_input)
-		samples = wav_data.astype(np.float64) / 32767.0
-		print(f"Loaded {args.denoise_input}: {len(samples)} samples, {sr} Hz, {len(samples)/sr:.2f}s")
-		print(f"Applying {args.denoise} denoising...")
-		if args.denoise == 'spectral':
-			samples = denoise_spectral(samples, sr)
-		else:
-			samples = denoise_morphological(samples, sr)
-		print("Denoising complete")
-		save_wav(samples, args.output, sr)
-		print(f"Total time: {format_duration(time.time() - pipeline_start)}")
-		return
-
-	# Full pipeline mode — require -i
-	if args.input is None:
-		print("Error: -i/--input is required (or use --denoise-input for standalone denoising)")
-		sys.exit(1)
 
 	filename = args.input
 	output_name = args.output
@@ -444,14 +380,6 @@ def main():
 		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi, args.batch_size)
 	else:
 		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi)
-
-	if args.denoise:
-		print(f"Applying {args.denoise} denoising...")
-		if args.denoise == 'spectral':
-			sound_data = denoise_spectral(sound_data, int(fps))
-		else:
-			sound_data = denoise_morphological(sound_data, int(fps))
-		print("Denoising complete")
 
 	save_wav(sound_data, output_name, int(fps))
 	print(f"Total time: {format_duration(time.time() - pipeline_start)}")
