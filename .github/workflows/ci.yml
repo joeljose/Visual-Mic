@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg UID=$(id -u) \
+            --build-arg GID=$(id -g) \
+            --build-arg UNAME=$(whoami) \
+            -t visualmic-ci .
+
+      - name: Lint
+        run: docker run --rm --entrypoint "" visualmic-ci ruff check .
+
+      - name: Verify import
+        run: docker run --rm --entrypoint "" visualmic-ci python -c "import visualmic"
+
+      - name: Verify --help
+        run: docker run --rm --entrypoint "" visualmic-ci python visualmic.py --help
+
+      - name: Verify --version
+        run: docker run --rm --entrypoint "" visualmic-ci python visualmic.py --version
+
+  test-gpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build GPU Docker image
+        run: |
+          docker build -f Dockerfile.gpu \
+            --build-arg UID=$(id -u) \
+            --build-arg GID=$(id -g) \
+            --build-arg UNAME=$(whoami) \
+            -t visualmic-gpu-ci .
+
+      - name: Lint
+        run: docker run --rm --entrypoint "" visualmic-gpu-ci ruff check .
+
+      - name: Verify import
+        run: docker run --rm --entrypoint "" visualmic-gpu-ci python -c "import visualmic"
+
+      - name: Verify --help
+        run: docker run --rm --entrypoint "" visualmic-gpu-ci python visualmic.py --help
+
+      - name: Verify --version
+        run: docker run --rm --entrypoint "" visualmic-gpu-ci python visualmic.py --version

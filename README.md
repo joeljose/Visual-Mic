@@ -1,5 +1,7 @@
 # Visual-Mic
 
+[![CI](https://github.com/joeljose/Visual-Mic/actions/workflows/ci.yml/badge.svg)](https://github.com/joeljose/Visual-Mic/actions/workflows/ci.yml)
+
 A Python implementation of the [Visual Microphone](https://people.csail.mit.edu/mrub/VisualMic/) algorithm, which recovers sound from high-speed video by analyzing sub-pixel surface vibrations. When sound hits an object, it causes tiny vibrations on the surface—far too small to see with the naked eye, but detectable in the phase of complex wavelet coefficients. This tool extracts those vibrations and reconstructs an audible signal, effectively turning everyday objects into microphones.
 
 The original work by [Davis et al. (MIT CSAIL, SIGGRAPH 2014)](https://people.csail.mit.edu/mrub/papers/VisualMic_SIGGRAPH2014.pdf) used Complex Steerable Pyramids for the video decomposition. This project uses **2D Dual-Tree Complex Wavelet Transform (DTCWT)** instead, which is ~5x more computationally efficient while still providing reliable phase information for motion estimation. We test against the same high-speed videos provided by MIT CSAIL.
@@ -12,7 +14,13 @@ The sample videos can be downloaded from [here](http://data.csail.mit.edu/vidmag
 
 ## Table of Contents
 
-- [Setting Up](#setting-up-visual-mic)
+- [Setup](#setup)
+  - [A. Local Setup](#a-local-setup)
+  - [B. Docker (CPU)](#b-docker-cpu)
+  - [C. Docker (GPU)](#c-docker-gpu)
+- [Usage](#usage)
+  - [CLI Tool](#cli-tool)
+  - [Tips](#tips)
 - [Part 1: The Original Work (Davis et al., SIGGRAPH 2014)](#part-1-the-original-work-davis-et-al-siggraph-2014)
   - [1.1 The Physical Phenomenon](#11-the-physical-phenomenon)
   - [1.2 Why Not Just Track Pixels?](#12-why-not-just-track-pixels)
@@ -28,95 +36,117 @@ The sample videos can be downloaded from [here](http://data.csail.mit.edu/vidmag
   - [2.4 Parameters](#24-parameters-used)
   - [2.5 What Each Scale Captures](#25-what-each-scale-captures)
 - [Part 3: Literature Survey](#part-3-literature-survey)
-- [Part 4: Denoising](#part-4-denoising)
 - [Future Work](#future-work)
+- [Development](#development)
+  - [Running Tests](#running-tests)
+  - [Versioning](#versioning)
+  - [Project Structure](#project-structure)
 - [References](#references)
 
 ---
 
-## Setting up visual mic
+## Setup
 
-###  A. Setting up Python3(skip if already setup)
+### A. Local Setup
 
-You can follow this link from [Youtube](https://www.youtube.com/watch?v=YYXdXT2l-Gg). This has a very concise explanation on how to setup python.
+```bash
+git clone https://github.com/joeljose/Visual-Mic.git
+cd Visual-Mic
+pip install -r requirements.txt
+python visualmic.py -i testvid.avi -o recovered_audio.wav
+```
 
-###  B. Rest of the setup
+**Requirements:** Python 3.8+
 
-1. Clone the repo
-   ```sh
-   git clone https://github.com/joeljose/Visual-Mic.git
-   ```
-2. Navigate to "Visual-Mic" repo.
-3. pip install all the python modules from requirements.txt(you should be in the "Visual-Mic" repository when you execute this command.)
-   ```sh
-   pip install -r requirements.txt
-   ```
-4. Run visualmic.py:
-   ```sh
-   python visualmic.py -i <input_video>
-   python visualmic.py -i testvid.avi -o recovered_audio.wav
-   python visualmic.py -i testvid.avi -fl 80 -fh 1000
-   python visualmic.py -i testvid.avi --roi 100,50,200,150
-   python visualmic.py -i Chips1-2200Hz-Mary_Had-input.avi --fps 2200
-   ```
-   | Argument | Required | Description |
-   |----------|----------|-------------|
-   | `-i`, `--input` | Yes* | Path to input video file (*not required when using `--denoise-input`) |
-   | `-o`, `--output` | No | Output audio path (default: `sound.wav`) |
-   | `-fl`, `--freq-low` | No | Lower cutoff frequency in Hz for temporal bandpass filter |
-   | `-fh`, `--freq-high` | No | Upper cutoff frequency in Hz for temporal bandpass filter |
-   | `--fps` | No | Override the video frame rate (Hz) for audio output sample rate |
-   | `--roi` | No | Region of interest as `x,y,w,h` — crops each frame before processing |
-   | `--gpu` | No | Use GPU-accelerated DTCWT (requires CUDA and `pytorch_wavelets`) |
-   | `--batch-size` | No | Frames per GPU batch (default: 16, GPU mode only) |
-   | `--denoise` | No | Audio denoising: `spectral` (spectral subtraction) or `morphological` (spectrogram morphology) |
-   | `--denoise-input` | No | Denoise an existing WAV file instead of processing video |
+### B. Docker (CPU)
 
-   When `-fl` and/or `-fh` are specified, a Butterworth filter is applied to the phase signals before audio reconstruction, rejecting low-frequency drift and high-frequency noise to improve output quality.
+```bash
+# Build
+./docker-build.sh
 
-   When `--fps` is specified, the given value is used as the audio sample rate instead of the frame rate reported by the video container. This is necessary for high-speed camera footage where the container frame rate does not reflect the actual capture rate. For example, the MIT CSAIL Chips1 video was captured at 2200 frames per second, but the AVI container reports ~30 fps. Without `--fps 2200`, the output audio would be sampled at 30 Hz and unplayable.
+# Run
+docker run --rm -v /path/to/videos:/data \
+    visual-mic:latest \
+    -i /data/testvid.avi -o /data/sound.wav
+```
 
-   When `--roi` is specified, each frame is cropped to the given rectangle before the DTCWT decomposition. This reduces computation and can improve SNR by focusing on the vibrating object (e.g., the bag of chips) and excluding background regions.
+### C. Docker (GPU)
 
-### C. Running with Docker (alternative)
+Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
-No Python setup needed — just Docker.
+```bash
+# Build
+./docker-build-gpu.sh
 
-1. Build the image (automatically picks up your username, UID, and GID):
-   ```sh
-   ./docker-build.sh
-   ```
-   This builds a Docker image named **`visual-mic`** using `docker-build.sh`, which auto-detects your host username, UID, and GID so that output files are owned by your host user.
+# Run
+docker run --rm --gpus all -v /path/to/videos:/data \
+    visual-mic-gpu:latest \
+    --gpu -i /data/Chips1-2200Hz-Mary_Had-input.avi \
+    -o /data/sound.wav --fps 2200 --batch-size 32
+```
 
-2. Run (mount the directory containing your video):
-   ```sh
-   docker run --rm --name visual-mic-run -v /path/to/videos:/data visual-mic -i /data/testvid.avi -o /data/sound.wav
-   ```
-   All the same arguments (`-fl`, `-fh`, `--fps`, `--roi`, etc.) work exactly as described above.
+The `--batch-size` flag controls how many frames are processed per GPU batch (default: 16). Larger batches are faster but use more GPU memory. At 704x704, each frame uses ~10 MB of GPU memory, so `--batch-size 32` needs ~660 MB including overhead.
 
-### D. Running with GPU acceleration (Docker + CUDA)
+**Note:** GPU mode produces very similar but not bit-identical output compared to CPU mode, due to float32 vs float64 precision differences and different DTCWT implementations (`pytorch_wavelets` vs `dtcwt`).
 
-For large videos, the DTCWT forward pass is the main bottleneck. GPU mode uses [`pytorch_wavelets`](https://github.com/fbcotter/pytorch_wavelets) with CUDA to run batched transforms on the GPU, providing a significant speedup.
+---
 
-**Requirements:** NVIDIA GPU with CUDA support, Docker with `--gpus` (nvidia-container-toolkit).
+## Usage
 
-1. Build the GPU image:
-   ```sh
-   ./docker-build-gpu.sh
-   ```
+### CLI Tool
 
-2. Run with `--gpu`:
-   ```sh
-   docker run --rm --gpus device=0 -v /path/to/videos:/data \
-       visual-mic-gpu --gpu -i /data/Chips1-2200Hz-Mary_Had-input.avi \
-       -o /data/sound_gpu.wav --fps 2200 --batch-size 32
-   ```
+```bash
+# Basic usage
+python visualmic.py -i testvid.avi -o recovered_audio.wav
 
-   The `--batch-size` flag controls how many frames are processed per GPU batch (default: 16). Larger batches are faster but use more GPU memory. At 704x704, each frame uses ~10 MB of GPU memory, so `--batch-size 32` needs ~660 MB including overhead — well within the capacity of most GPUs.
+# With temporal bandpass filter
+python visualmic.py -i testvid.avi -fl 80 -fh 1000
 
-   If you run out of GPU memory, reduce `--batch-size` (e.g., `--batch-size 8` or `--batch-size 1`).
+# With ROI (focus on vibrating object)
+python visualmic.py -i testvid.avi --roi 100,50,200,150
 
-   **Note:** GPU mode produces very similar but not bit-identical output compared to CPU mode, due to float32 vs float64 precision differences.
+# Override frame rate for high-speed video
+python visualmic.py -i Chips1-2200Hz-Mary_Had-input.avi --fps 2200
+
+# GPU acceleration
+python visualmic.py -i testvid.avi --gpu --batch-size 32
+
+# Custom wavelet filters
+python visualmic.py -i testvid.avi --biort near_sym_a --qshift qshift_a
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-i / --input` | *(required)* | Input video path |
+| `-o / --output` | `sound.wav` | Output audio path |
+| `-fl / --freq-low` | — | Lower cutoff frequency (Hz) for temporal bandpass filter |
+| `-fh / --freq-high` | — | Upper cutoff frequency (Hz) for temporal bandpass filter |
+| `--fps` | — | Override video frame rate (Hz) for audio sample rate |
+| `--roi` | — | Region of interest as `x,y,w,h` |
+| `--gpu` | off | Use GPU-accelerated DTCWT (requires CUDA + pytorch_wavelets) |
+| `--batch-size` | 16 | Frames per GPU batch (GPU mode only) |
+| `--nlevels` | 3 | Number of DTCWT decomposition levels |
+| `--biort` | `near_sym_b` | Biorthogonal wavelet filter for DTCWT level 1 |
+| `--qshift` | `qshift_b` | Quarter-shift wavelet filter for DTCWT levels 2+ |
+| `--version` | — | Show program version and exit |
+
+**Available wavelet filters:**
+- `--biort`: `antonini`, `legall`, `near_sym_a`, `near_sym_b`
+- `--qshift`: `qshift_06`, `qshift_a`, `qshift_b`, `qshift_c`, `qshift_d`
+
+When `-fl` and/or `-fh` are specified, a Butterworth filter is applied to the phase signals before audio reconstruction, rejecting low-frequency drift and high-frequency noise.
+
+When `--fps` is specified, the given value is used as the audio sample rate instead of the frame rate reported by the video container. This is necessary for high-speed camera footage where the container frame rate does not reflect the actual capture rate.
+
+When `--roi` is specified, each frame is cropped to the given rectangle before the DTCWT decomposition. This reduces computation and can improve SNR by focusing on the vibrating object.
+
+### Tips
+
+- Start with default settings and adjust from there.
+- Use `--roi` to focus on the vibrating object — improves SNR and reduces computation.
+- For MIT CSAIL videos, always use `--fps 2200` (the container reports ~30 fps incorrectly).
+- Use `--gpu` for large videos — the DTCWT forward pass is the main bottleneck.
+- If GPU runs out of memory, reduce `--batch-size`.
 
 ---
 
@@ -362,7 +392,7 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 
 Here's how `visualmic.py` implements the pipeline, with line references.
 
-### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction (lines 142–194)
+### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction
 
 Frames are streamed directly from the video file — each frame is read, transformed, and discarded immediately, so only one raw frame is in memory at a time. This enables processing of arbitrarily long videos without running out of memory. If an ROI is specified, each frame is cropped before the DTCWT decomposition, reducing computation and focusing on the vibrating object.
 
@@ -396,10 +426,6 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, re
     phase_signals = np.array(phase_signals)  # shape: (frame_count, nlevels, n_orient)
 ```
 
-`transform.forward()` returns a `Pyramid` object:
-- `pyramid.highpasses[level]` has shape $(H_{\text{level}}, W_{\text{level}}, 6)$
-- Each value is a **complex number** encoding amplitude and phase
-
 Vectorized NumPy operations on entire 2D spatial slices:
 
 | Operation | Code | Corresponds to |
@@ -413,7 +439,7 @@ The conjugate multiplication `coeffs * conj(ref)` computes the phase difference 
 
 **Result:** `phase_signals[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
 
-### Step 3.5: Temporal Bandpass Filtering (lines 89–118, optional)
+### Step 3.5: Temporal Bandpass Filtering (optional)
 
 When `-fl` and/or `-fh` are specified, a 4th-order Butterworth filter is applied to each of the 18 phase signals before cross-correlation:
 
@@ -432,7 +458,7 @@ for i in range(nlevels):
 - Skipped if video has fewer than 13 frames (minimum required for `filtfilt`)
 - If only `-fl` is given, acts as highpass; if only `-fh`, acts as lowpass
 
-### Step 4: Temporal Alignment via Cross-Correlation (lines 120–124)
+### Step 4: Temporal Alignment via Cross-Correlation
 
 ```python
 ref_vector = phase_signals[:, ref_level, ref_orient].reshape(-1)
@@ -441,7 +467,7 @@ for i in range(nlevels):
         shift_matrix[i, j] = find_best_shift(ref_vector, phase_signals[:, i, j].reshape(-1))
 ```
 
-The `find_best_shift` function (lines 26–28) uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
+The `find_best_shift` function uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
 
 ```python
 def find_best_shift(a, b):
@@ -449,7 +475,7 @@ def find_best_shift(a, b):
     return np.argmax(correlation) - (len(b) - 1)
 ```
 
-### Step 5: Sum Across Sub-bands with Temporal Shifts (lines 126–129)
+### Step 5: Sum Across Sub-bands with Temporal Shifts
 
 ```python
 sound_raw = np.zeros(frame_count)
@@ -458,7 +484,7 @@ for i in range(nlevels):
         sound_raw += np.roll(phase_signals[:, i, j], int(shift_matrix[i, j]))
 ```
 
-### Step 6: Normalize to $[-1, 1]$ (lines 131–137)
+### Step 6: Normalize to $[-1, 1]$
 
 ```python
 p_min = np.min(sound_raw)
@@ -469,9 +495,7 @@ else:
     sound_data = ((2 * sound_raw) - (p_min + p_max)) / (p_max - p_min)
 ```
 
-Includes a guard against division by zero when no motion is detected.
-
-### Step 7: Output WAV (lines 31–34, called at line 456)
+### Step 7: Output WAV
 
 ```python
 def save_wav(samples, output_name, sample_rate):
@@ -483,13 +507,15 @@ The `sample_rate` is set to the video's FPS, ensuring the output audio matches t
 
 ## 2.4 Parameters Used
 
-| Parameter | Value | Meaning |
-|-----------|-------|---------|
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
 | `nlevels` | 3 | Number of wavelet decomposition scales |
 | `n_orient` | 6 | Number of orientations per scale (fixed by DTCWT) |
 | `ref_index` | 0 | Reference frame index (first frame) |
 | `ref_level` | 0 | Reference sub-band: finest scale |
 | `ref_orient` | 0 | Reference sub-band: first orientation (~$+15°$) |
+| `biort` | `near_sym_b` | Biorthogonal filter for level 1 |
+| `qshift` | `qshift_b` | Quarter-shift filter for levels 2+ |
 
 ## 2.5 What Each Scale Captures
 
@@ -539,34 +565,82 @@ The vibration signal is present across all scales (the whole surface moves), but
 
 ---
 
-# Part 4: Denoising
+## Future Work
 
-Two denoising methods are available as post-processing, applied to the recovered audio via `--denoise`:
+- **Multiprocessing across frames**: Frame processing is independent after the reference frame is computed. Reading frames remains sequential (VideoCapture limitation), but the DTCWT + phase extraction can be parallelized across CPU cores using batch processing with `multiprocessing.Pool`, giving ~Nx speedup on an N-core machine.
 
-- **Spectral subtraction** (`--denoise spectral`): Estimates a noise profile from the first ~0.1 seconds of audio (assumed to be noise-only), then subtracts it from the STFT magnitude across all frames. Simple and fast, but can introduce "musical noise" artifacts.
+- **Better post-processing / signal recovery**: The current algorithm uses properly wrapped phase differences (`np.angle(coeffs * conj(ref))`, bounded to [-π, π]), which is mathematically correct but produces lower-amplitude signals for very small vibrations. Exploring better post-processing — such as phase unwrapping, adaptive Wiener filtering, or learned denoising — could recover signal strength without reintroducing the phase wrapping artifacts.
 
-- **Morphological spectrogram filtering** (`--denoise morphological`): Converts the STFT magnitude to a grayscale image, applies binary thresholding followed by morphological erosion and dilation to create a signal/noise mask, then amplifies signal regions and attenuates noise regions. Based on the approach from [audio_denoising](https://github.com/joeljose/audio_denoising).
+---
 
-Both methods can also be used standalone on existing WAV files via `--denoise-input`:
+## Development
 
-```sh
-python visualmic.py --denoise-input sound.wav --denoise spectral -o denoised.wav
-python visualmic.py --denoise-input sound.wav --denoise morphological -o denoised_morph.wav
+### Running Tests
+
+All tests run inside Docker — no local Python dependencies needed:
+
+```bash
+# CPU: lint + unit tests (builds image automatically if not found)
+./test.sh
+
+# GPU: lint + unit tests (requires nvidia-container-toolkit)
+./test.sh gpu
+
+# Force rebuild before testing
+./test.sh --build
+./test.sh gpu --build
+```
+
+**CPU tests** (`tests/test_visualmic.py`) cover:
+- Utility functions (`format_duration`, `find_best_shift`, `save_wav`)
+- Phase signal postprocessing (cross-correlation, normalization, Butterworth filter)
+- VRAM estimation arithmetic
+- Full `extract_audio` pipeline on synthetic 256x256 video (shape, finiteness)
+- All CLI validation error paths
+
+**GPU tests** (`tests/test_visualmic_gpu.py`) cover:
+- DTCWTForward shapes, finiteness, and custom filter selection
+- Full `extract_audio_gpu` pipeline on synthetic 256x256 video
+- All GPU tests skip automatically on systems without CUDA
+
+### Versioning
+
+Version is tracked in a `VERSION` file at the project root. `visualmic.py` has `__version__` baked into the source (updated at release time).
+
+**To cut a release:**
+1. Update `VERSION` with the new version number
+2. Update `__version__` in `visualmic.py`
+3. Update `CHANGELOG.md` — move items from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`
+4. Commit: `Release vX.Y.Z`
+5. Tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z"`
+6. Push: `git push && git push origin vX.Y.Z`
+7. Rebuild Docker images: `./docker-build.sh && ./docker-build-gpu.sh`
+
+### Project Structure
+
+```
+visualmic.py               # CLI tool (CPU + GPU paths)
+Dockerfile                 # CPU Docker image (python:3.11-slim)
+Dockerfile.gpu             # GPU Docker image (pytorch:2.1.2-cuda12.1)
+docker-build.sh            # Build + tag CPU image
+docker-build-gpu.sh        # Build + tag GPU image
+test.sh                    # Run lint + tests (Docker, supports cpu/gpu mode)
+requirements.txt           # CPU runtime dependencies
+requirements-gpu.txt       # GPU runtime dependencies
+requirements-dev.txt       # Dev dependencies (pytest, ruff)
+tests/
+  test_visualmic.py        # CPU unit tests
+  test_visualmic_gpu.py    # GPU unit tests (CUDA-only, skip on CPU)
+docs/design/               # Architecture decision records
+  visualmic-hardening.md   # Hardening design doc
+VERSION                    # Single source of truth for version
+CHANGELOG.md               # Release history
+CONTRIBUTING.md            # Contribution guidelines
 ```
 
 ---
 
-## Future Work
-
-- **GPU-accelerated DTCWT** *(implemented)*: The `--gpu` flag uses [`pytorch_wavelets`](https://github.com/fbcotter/pytorch_wavelets) with CUDA to run batched DTCWT transforms on the GPU. See [Running with GPU acceleration](#d-running-with-gpu-acceleration-docker--cuda) for setup instructions.
-
-- **Multiprocessing across frames**: Frame processing is independent after the reference frame is computed. Reading frames remains sequential (VideoCapture limitation), but the DTCWT + phase extraction can be parallelized across CPU cores using batch processing with `multiprocessing.Pool`, giving ~Nx speedup on an N-core machine.
-
-- **Better post-processing / signal recovery**: The current algorithm uses properly wrapped phase differences (`np.angle(coeffs * conj(ref))`, bounded to [-π, π]), which is mathematically correct but produces lower-amplitude signals for very small vibrations. The original (2021) implementation used unwrapped phase subtraction (`phase - ref_phase`), which could exceed [-π, π] and produced stronger (but noisier) output. Exploring better post-processing — such as phase unwrapping, adaptive Wiener filtering, or learned denoising — could recover signal strength without reintroducing the phase wrapping artifacts.
-
----
-
-# References
+## References
 
 1. Davis, A., Rubinstein, M., Wadhwa, N., Mysore, G.J., Durand, F., & Freeman, W.T. (2014). *The Visual Microphone: Passive Recovery of Sound from Video.* ACM Transactions on Graphics (SIGGRAPH), 33(4).
    [Paper PDF](https://people.csail.mit.edu/mrub/papers/VisualMic_SIGGRAPH2014.pdf) | [Project Page](https://people.csail.mit.edu/mrub/VisualMic/)
@@ -598,8 +672,8 @@ python visualmic.py --denoise-input sound.wav --denoise morphological -o denoise
 ---
 
 ## Follow Me
-<a href="https://x.com/joelk1jose" target="_blank"><img class="ai-subscribed-social-icon" src=".github/images/x.png" width="30"></a>
-<a href="https://github.com/joeljose" target="_blank"><img class="ai-subscribed-social-icon" src=".github/images/gthb.png" width="30"></a>
-<a href="https://www.linkedin.com/in/joel-jose-527b80102/" target="_blank"><img class="ai-subscribed-social-icon" src=".github/images/lnkdn.png" width="30"></a>
+<a href="https://x.com/joelk1jose" target="_blank"><img src=".github/images/x.png" width="30"></a>&nbsp;&nbsp;
+<a href="https://github.com/joeljose" target="_blank"><img src=".github/images/gthb.png" width="30"></a>&nbsp;&nbsp;
+<a href="https://www.linkedin.com/in/joel-jose-527b80102/" target="_blank"><img src=".github/images/lnkdn.png" width="30"></a>
 
 <h3 align="center">Show your support by starring the repository 🙂</h3>
