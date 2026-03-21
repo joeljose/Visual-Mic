@@ -303,6 +303,10 @@ def main():
 	if freq_low is not None and freq_high is not None and freq_low >= freq_high:
 		print(f"Error: freq-low ({freq_low} Hz) must be less than freq-high ({freq_high} Hz)")
 		sys.exit(1)
+	nlevels = args.nlevels
+	if nlevels < 1:
+		print("Error: --nlevels must be >= 1")
+		sys.exit(1)
 	roi = None
 	if args.roi is not None:
 		try:
@@ -324,13 +328,13 @@ def main():
 			print("Error: --gpu requires PyTorch (pip install torch)")
 			sys.exit(1)
 		try:
-			import pytorch_wavelets
+			import pytorch_wavelets  # noqa: F401
 		except ImportError:
 			print("Error: --gpu requires pytorch_wavelets (pip install git+https://github.com/fbcotter/pytorch_wavelets.git)")
 			sys.exit(1)
 	else:
 		try:
-			import dtcwt
+			import dtcwt  # noqa: F401
 		except ImportError:
 			print("Error: CPU mode requires dtcwt (pip install dtcwt)")
 			sys.exit(1)
@@ -368,11 +372,6 @@ def main():
 
 	print(f"frame_count: {frame_count}, frame_width: {frame_width}, frame_height: {frame_height}, fps: {fps}")
 
-	nlevels = args.nlevels
-	if nlevels < 1:
-		print("Error: --nlevels must be >= 1")
-		cap.release()
-		sys.exit(1)
 	min_dim = 2 ** nlevels
 
 	if roi is not None:
