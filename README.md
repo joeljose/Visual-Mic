@@ -21,6 +21,11 @@ The sample videos can be downloaded from [here](http://data.csail.mit.edu/vidmag
 - [Usage](#usage)
   - [CLI Tool](#cli-tool)
   - [Tips](#tips)
+- [GPU Acceleration](#gpu-acceleration)
+  - [Batched DTCWT Architecture](#batched-dtcwt-architecture)
+  - [GPU Phase Extraction](#gpu-phase-extraction)
+  - [Memory Management](#memory-management)
+  - [Performance](#performance)
 - [Part 1: The Original Work (Davis et al., SIGGRAPH 2014)](#part-1-the-original-work-davis-et-al-siggraph-2014)
   - [1.1 The Physical Phenomenon](#11-the-physical-phenomenon)
   - [1.2 Why Not Just Track Pixels?](#12-why-not-just-track-pixels)
@@ -147,6 +152,76 @@ When `--roi` is specified, each frame is cropped to the given rectangle before t
 - For MIT CSAIL videos, always use `--fps 2200` (the container reports ~30 fps incorrectly).
 - Use `--gpu` for large videos — the DTCWT forward pass is the main bottleneck.
 - If GPU runs out of memory, reduce `--batch-size`.
+
+---
+
+## GPU Acceleration
+
+The `--gpu` flag enables GPU-accelerated processing via [PyTorch](https://pytorch.org/) and [`pytorch_wavelets`](https://github.com/fbcotter/pytorch_wavelets). The GPU path replaces the CPU DTCWT forward transform with a CUDA-accelerated batched equivalent while keeping the same algorithmic pipeline. Temporal postprocessing (bandpass filtering, cross-correlation, sub-band summation) remains on CPU/NumPy since it operates on the small phase signal array, not full wavelet coefficients.
+
+### Batched DTCWT Architecture
+
+The GPU path processes frames in configurable batches rather than one at a time:
+
+1. **Batch accumulation**: Grayscale frames are collected into batches of `--batch-size` frames (default: 16)
+2. **GPU transfer**: The batch is stacked into a `(B, 1, H, W)` float32 tensor and sent to GPU
+3. **Batched forward DTCWT**: `pytorch_wavelets.DTCWTForward` processes all frames in the batch simultaneously, producing `Yh[level]` with shape `(B, 1, 6, H_l, W_l, 2)` where the last dimension is real/imaginary
+4. **Phase extraction**: Performed on-GPU for the entire batch (see below)
+5. **Transfer back**: Only the small phase signal array `(B, nlevels, 6)` is transferred to CPU — the full wavelet coefficients are discarded
+6. **Memory cleanup**: GPU tensors are explicitly deleted (`del batch_tensor, Yl, Yh`) after each batch
+
+This streaming architecture means GPU memory usage is proportional to `batch_size`, not `frame_count` — enabling processing of arbitrarily long videos.
+
+### GPU Phase Extraction
+
+The CPU path uses NumPy's complex number support (`np.angle(coeffs * ref_conj)`). The GPU path must handle complex arithmetic manually because `pytorch_wavelets` represents coefficients as real/imaginary pairs in the last dimension:
+
+```
+Yh[level] shape: (B, 1, 6, H, W, 2)
+                                   └── [0]=real, [1]=imag
+```
+
+**Conjugate multiplication** (phase difference from reference):
+```python
+# (c + id)(a - ib) = (ca + db) + i(da - cb)
+prod_real = c_real * r_real + c_imag * r_imag
+prod_imag = c_imag * r_real - c_real * r_imag
+```
+
+**Phase and amplitude-squared weighting** (vectorized over entire batch):
+```python
+phase_diff = torch.atan2(prod_imag, prod_real)
+amp_sq = c_real * c_real + c_imag * c_imag
+weighted = (amp_sq * phase_diff).sum(dim=(-2, -1))  # sum over H, W
+```
+
+This produces the same $A^2$-weighted spatial average as the CPU path, but computed entirely on GPU for the full batch at once.
+
+**Reference frame handling**: The reference frame's coefficients are extracted when the batch containing `ref_index` is processed, then retained as a small GPU tensor for subsequent batches. Frames before the reference produce zero phase signals.
+
+### Memory Management
+
+**Pre-flight VRAM estimation**: Before processing, `estimate_vram()` calculates peak VRAM usage based on batch size and frame dimensions. The DTCWT forward transform requires ~15x the input frame size in working memory (filter banks, intermediate convolutions). If estimated usage exceeds 70% of available VRAM, a warning is printed with suggestions to reduce `--batch-size`, use `--roi`, or switch to CPU mode.
+
+**OOM handling**: If a CUDA out-of-memory error occurs during processing, the tool catches it and exits with an actionable error message rather than a raw PyTorch traceback.
+
+**CPU/GPU output differences**: The GPU path uses float32 (PyTorch/CUDA standard) while the CPU path uses float64. Combined with different DTCWT implementations (`pytorch_wavelets` vs `dtcwt`), outputs are similar but not bit-identical. Both produce valid audio recovery.
+
+### Performance
+
+Benchmarked on Chips2-2200Hz-Mary_MIDI-input.avi (704x400, 38,083 frames, 2200 fps) with an RTX 4050 (6 GB VRAM):
+
+| Configuration | Time | Notes |
+|---|---|---|
+| GPU, default settings | 3m 50s | `--batch-size 32`, `near_sym_b`/`qshift_b` |
+| GPU, `--nlevels 2` | 3m 49s | Fewer decomposition levels |
+| GPU, old filters | 3m 30s | `--biort near_sym_a --qshift qshift_a` |
+| GPU, with ROI | 2m 46s | `--roi 100,50,400,300` (smaller region) |
+
+**Hardware requirements (GPU path):**
+- NVIDIA GPU with CUDA 12.1+ support
+- Minimum ~1 GB VRAM for typical videos (scales with `--batch-size` and resolution)
+- [`nvidia-container-toolkit`](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) for Docker GPU support
 
 ---
 
