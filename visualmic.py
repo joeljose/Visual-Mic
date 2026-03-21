@@ -99,9 +99,9 @@ def postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref
 	return sound_data
 
 
-def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None):
+def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None, biort='near_sym_b', qshift='qshift_b'):
 	import dtcwt
-	transform = dtcwt.Transform2d()
+	transform = dtcwt.Transform2d(biort=biort, qshift=qshift)
 	ref_conj = None
 	phase_signals = []
 	progress_interval = max(1, frame_count // 10)
@@ -154,12 +154,25 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, re
 	return postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref_level, ref_orient, fps, freq_low, freq_high)
 
 
-def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None, batch_size=16):
+def estimate_vram(batch_size, height, width, nlevels):
+	"""Estimate peak GPU VRAM usage in bytes.
+
+	Peak occurs during batched forward DTCWT: input frames plus
+	transform intermediates (~15x overhead per frame).
+	"""
+	frame_bytes = height * width * 4  # float32
+	dtcwt_overhead = 15  # empirical: forward transform intermediates
+	batch_vram = batch_size * frame_bytes * dtcwt_overhead
+	pytorch_overhead = 300 * 1024 * 1024  # ~300 MB for PyTorch + filter weights
+	return batch_vram + pytorch_overhead
+
+
+def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None, batch_size=16, biort='near_sym_b', qshift='qshift_b'):
 	import torch
 	from pytorch_wavelets import DTCWTForward
 
 	device = torch.device('cuda')
-	xfm = DTCWTForward(J=nlevels, biort='near_sym_b', qshift='qshift_b').to(device)
+	xfm = DTCWTForward(J=nlevels, biort=biort, qshift=qshift).to(device)
 	print(f"GPU mode: {torch.cuda.get_device_name(0)}, batch_size={batch_size}")
 
 	ref_coeffs = None
@@ -276,6 +289,9 @@ def main():
 	parser.add_argument('--roi', type=str, default=None, help='Region of interest as x,y,w,h (e.g. --roi 100,50,200,150)')
 	parser.add_argument('--gpu', action='store_true', help='Use GPU-accelerated DTCWT (requires CUDA and pytorch_wavelets)')
 	parser.add_argument('--batch-size', type=int, default=16, help='Frames per GPU batch (default: 16, GPU mode only)')
+	parser.add_argument('--nlevels', type=int, default=3, help='Number of DTCWT decomposition levels (default: 3)')
+	parser.add_argument('--biort', default='near_sym_b', help='DTCWT biorthogonal filter (default: near_sym_b)')
+	parser.add_argument('--qshift', default='qshift_b', help='DTCWT quarter-shift filter (default: qshift_b)')
 
 	args = parser.parse_args()
 	pipeline_start = time.time()
@@ -352,7 +368,11 @@ def main():
 
 	print(f"frame_count: {frame_count}, frame_width: {frame_width}, frame_height: {frame_height}, fps: {fps}")
 
-	nlevels = 3
+	nlevels = args.nlevels
+	if nlevels < 1:
+		print("Error: --nlevels must be >= 1")
+		cap.release()
+		sys.exit(1)
 	min_dim = 2 ** nlevels
 
 	if roi is not None:
@@ -377,9 +397,29 @@ def main():
 	ref_orient = 0
 
 	if args.gpu:
-		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi, args.batch_size)
+		import torch
+		proc_h = roi[3] if roi else frame_height
+		proc_w = roi[2] if roi else frame_width
+		required = estimate_vram(args.batch_size, proc_h, proc_w, nlevels)
+		free, total = torch.cuda.mem_get_info(0)
+		required_gb = required / (1024 ** 3)
+		free_gb = free / (1024 ** 3)
+		total_gb = total / (1024 ** 3)
+		print(f"  Estimated VRAM needed: {required_gb:.1f} GB")
+		print(f"  GPU VRAM available:    {free_gb:.1f} GB / {total_gb:.1f} GB")
+		if required > free * 0.7:
+			print(
+				f"\nWarning: estimated VRAM ({required_gb:.1f} GB) exceeds 70% of "
+				f"available ({free_gb:.1f} GB).\n"
+				f"  Suggestions:\n"
+				f"  - Reduce --batch-size (current: {args.batch_size})\n"
+				f"  - Use --roi to crop to a smaller region\n"
+				f"  - Remove --gpu to use CPU mode",
+				file=sys.stderr
+			)
+		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi, args.batch_size, args.biort, args.qshift)
 	else:
-		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi)
+		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi, args.biort, args.qshift)
 
 	save_wav(sound_data, output_name, int(fps))
 	print(f"Total time: {format_duration(time.time() - pipeline_start)}")
