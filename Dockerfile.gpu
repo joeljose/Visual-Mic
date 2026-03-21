@@ -1,4 +1,7 @@
-FROM pytorch/pytorch:1.12.1-cuda11.3-cudnn8-runtime
+# Pin PyTorch 2.1.2 because pytorch_wavelets is unmaintained (last commit 2023)
+# and uses old-style autograd.Function. Tested working with 2.1.2.
+# numpy<2 required because pytorch_wavelets uses removed NumPy 2.0 APIs.
+FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libgl1 libglib2.0-0 git && \
@@ -13,11 +16,17 @@ RUN groupadd -g ${GID} ${UNAME} && \
 
 WORKDIR /app
 
-COPY requirements-gpu.txt .
-RUN pip install --no-cache-dir -r requirements-gpu.txt && \
+COPY requirements-gpu.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements-gpu.txt -r requirements-dev.txt && \
     pip install --no-cache-dir git+https://github.com/fbcotter/pytorch_wavelets.git
 
 COPY visualmic.py .
+COPY tests/ tests/
+
+RUN chown -R ${UID}:${GID} /app
+
+ARG VERSION
+LABEL version=${VERSION}
 
 USER ${UNAME}
 
