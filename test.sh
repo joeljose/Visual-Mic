@@ -25,9 +25,6 @@ fi
 if [[ "$BUILD_FLAG" == "--build" ]] || ! docker image inspect ${IMAGE} &>/dev/null; then
     echo "Building test image (${MODE})..."
     docker build \
-        --build-arg UID="$(id -u)" \
-        --build-arg GID="$(id -g)" \
-        --build-arg UNAME="$(whoami)" \
         ${DOCKERFILE} \
         -t ${IMAGE} .
     echo ""
