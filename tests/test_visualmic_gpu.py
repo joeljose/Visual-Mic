@@ -1,4 +1,4 @@
-"""Unit tests for visualmic.py — GPU path (CUDA only)."""
+"""Unit tests for visualmic.py, GPU path (CUDA only)."""
 
 import os
 import sys

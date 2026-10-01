@@ -1,6 +1,8 @@
 # Design Doc: Visual-Mic Project Hardening
 
-**Status: APPROVED**
+**Status: APPROVED** (implemented in v2.0.0)
+
+> Later changes: spectral subtraction came back as `--denoise` with a median noise estimate, and sub-band alignment was replaced by a projection onto the vibration direction. See CHANGELOG.md.
 
 ## Context
 
@@ -24,7 +26,7 @@ A code review identified gaps vs the sibling repos (EVM, DTCWT Motion Mag): no u
 - Clean up README (remove denoising, add Development section, restructure Setup)
 
 **Non-Goals:**
-- Refactoring GPU/CPU into shared code paths (defer — `postprocess_phase_signals` already shared)
+- Refactoring GPU/CPU into shared code paths (deferred: `postprocess_phase_signals` is already shared)
 - Multiprocessing across frames (defer)
 - Refactoring into a pip-installable package
 - GPU testing in CI (no hosted GPU runners)
@@ -35,10 +37,10 @@ A code review identified gaps vs the sibling repos (EVM, DTCWT Motion Mag): no u
 ### A. Remove Denoising Code
 
 Delete from `visualmic.py`:
-- `denoise_spectral()` (lines 37–57) and `denoise_morphological()` (lines 60–86)
+- `denoise_spectral()` (lines 37 to 57) and `denoise_morphological()` (lines 60 to 86)
 - `--denoise` and `--denoise-input` CLI arguments
-- Standalone denoise mode block (lines 321–340)
-- Post-pipeline denoise application (lines 448–454)
+- Standalone denoise mode block (lines 321 to 340)
+- Post-pipeline denoise application (lines 448 to 454)
 - `from scipy.io.wavfile import read as read_wav` (only needed for `--denoise-input`)
 - `from scipy import ndimage` (only needed for morphological denoising)
 - Update error message at line 344 to remove `--denoise-input` reference
@@ -52,8 +54,8 @@ Currently hard-coded at line 419. Make it a CLI argument. Validation: must be >=
 
 **`--biort` (default: `near_sym_b`) and `--qshift` (default: `qshift_b`):**
 Matching DTCWT Motion Mag v2.0.0 defaults. Applied to both CPU and GPU paths:
-- CPU: `transform.forward(gray, nlevels=nlevels, biort=biort, qshift=qshift)` — note: `dtcwt.Transform2d()` accepts biort/qshift in constructor
-- GPU: `DTCWTForward(J=nlevels, biort=biort, qshift=qshift)` — already parameterized in the code (line 202), just needs to read from args instead of hard-coding
+- CPU: `transform.forward(gray, nlevels=nlevels, biort=biort, qshift=qshift)`. Note: `dtcwt.Transform2d()` accepts biort/qshift in constructor
+- GPU: `DTCWTForward(J=nlevels, biort=biort, qshift=qshift)` is already parameterized in the code (line 202), just needs to read from args instead of hard-coding
 
 Available options (same as DTCWT Motion Mag):
 - biort: `antonini`, `legall`, `near_sym_a`, `near_sym_b`
@@ -65,7 +67,7 @@ Standard argparse version action reading from `__version__`.
 ### C. Pre-Flight Memory Estimation
 
 **CPU path:**
-Visual-Mic is memory-efficient — it streams frames and only stores the phase signal array `(num_frames, nlevels, n_orient)` which is small (e.g., 301 × 3 × 6 × 8 bytes = 43 KB). The main memory consumer is the reference conjugate coefficients (one frame's worth of DTCWT coefficients). No pre-flight check needed for CPU — it can handle arbitrarily long videos.
+Visual-Mic is memory-efficient: it streams frames and only stores the phase signal array `(num_frames, nlevels, n_orient)` which is small (e.g., 301 × 3 × 6 × 8 bytes = 43 KB). The main memory consumer is the reference conjugate coefficients (one frame's worth of DTCWT coefficients). No pre-flight check is needed for CPU, since it can handle videos of any length.
 
 **GPU path:**
 The GPU path batches frames, so peak VRAM depends on batch size:
@@ -103,7 +105,7 @@ pytest>=7.0,<9
 ruff>=0.4.0,<1
 ```
 
-**`tests/test_visualmic.py`** — CPU tests:
+**`tests/test_visualmic.py`**, CPU tests:
 
 Tier 1 (strict, exact equality):
 - `TestFormatDuration`: 0s, 59s, 60s, 3661s
@@ -111,7 +113,7 @@ Tier 1 (strict, exact equality):
 - `TestSaveWav`: output file exists, correct sample rate, int16 range
 
 Tier 2 (moderate tolerance):
-- `TestPostprocessPhaseSignals`: constant input → silent output, normalization to [-1, 1], cross-correlation alignment on known-shifted synthetic signals
+- `TestPostprocessPhaseSignals`: constant input gives silent output, normalization to [-1, 1], cross-correlation alignment on known-shifted synthetic signals
 - `TestButterworthFilter`: in-band signal preserved, out-of-band signal attenuated, freq_low >= Nyquist warning
 - `TestEstimateVram`: arithmetic correctness, batch size scaling
 
@@ -119,7 +121,7 @@ Tier 3 (smoke):
 - `TestExtractAudio`: synthetic 256×256 video (random noise, 32 frames), verify output shape = (32,), all values finite, values in [-1, 1]
 - `TestInputValidation`: missing file, invalid frequencies, bad ROI format, ROI out of bounds, invalid nlevels
 
-**`tests/test_visualmic_gpu.py`** — GPU tests:
+**`tests/test_visualmic_gpu.py`**, GPU tests:
 
 All wrapped in `@pytest.mark.skipif(not HAS_CUDA)`:
 - `TestGpuForwardPass`: DTCWTForward on 256×256 batch, verify Yh shapes and finite values
@@ -127,7 +129,7 @@ All wrapped in `@pytest.mark.skipif(not HAS_CUDA)`:
 - `TestEstimateVram`: VRAM arithmetic
 
 **`test.sh`:**
-Matches DTCWT Motion Mag pattern — Docker-based, supports `cpu`/`gpu` modes:
+Matches the DTCWT Motion Mag pattern. Docker-based, supports `cpu`/`gpu` modes:
 ```bash
 ./test.sh          # CPU lint + tests
 ./test.sh gpu      # GPU lint + tests
@@ -153,10 +155,10 @@ GPU job:
 4. Verify `--help`
 5. Verify `--version`
 
-No pipeline smoke test in CI (no test video committed to repo — MIT CSAIL videos are 14 GB).
+No pipeline smoke test in CI (no test video committed to the repo, since MIT CSAIL videos are 14 GB).
 
 **Manual GPU verification (post-implementation):**
-Download a MIT CSAIL test video (e.g., `Chips1-2200Hz-Mary_Had-input.avi` from http://data.csail.mit.edu/vidmag/VisualMic/Results/) and run the GPU pipeline end-to-end to verify audio output is recognizable. CPU verification with real videos is impractical — the MIT CSAIL videos are 704×704 × 22,859 frames, which would take too long or OOM on CPU.
+Download a MIT CSAIL test video (e.g., `Chips1-2200Hz-Mary_Had-input.avi` from http://data.csail.mit.edu/vidmag/VisualMic/Results/) and run the GPU pipeline end-to-end to verify audio output is recognizable. CPU verification with real videos is impractical: the MIT CSAIL videos are 704×704 × 22,859 frames, which would take too long on CPU.
 
 ### G. GPU Dockerfile Upgrade
 
@@ -225,7 +227,7 @@ Same structure as EVM/DTCWT repos:
 
 | Approach | Pros | Cons | Verdict |
 |----------|------|------|---------|
-| Remove entirely | Single responsibility, less code to maintain, separate repo exists | Users lose integrated denoising | **Chosen** — `audio_denoising` repo is the right place for this |
+| Remove entirely | Single responsibility, less code to maintain, separate repo exists | Users lose integrated denoising | **Chosen.** The `audio_denoising` repo is the right place for this |
 | Keep as optional | Convenience for users | Duplicated code, scope creep, adds scipy.ndimage dependency | Rejected |
 
 ### Default wavelet filters: near_sym_a vs near_sym_b
@@ -233,21 +235,21 @@ Same structure as EVM/DTCWT repos:
 | Approach | Pros | Cons | Verdict |
 |----------|------|------|---------|
 | Keep `near_sym_a` (dtcwt default) | Backward compatible | Inconsistent with GPU path (already uses `near_sym_b`), worse quality at high magnification | Rejected |
-| Switch to `near_sym_b` | Matches DTCWT Motion Mag, matches existing GPU path, fewer artifacts | Breaking change for CPU users | **Chosen** — v2.0.0 justifies the break, `--biort`/`--qshift` give user control |
+| Switch to `near_sym_b` | Matches DTCWT Motion Mag, matches existing GPU path, fewer artifacts | Breaking change for CPU users | **Chosen.** v2.0.0 justifies the break, `--biort`/`--qshift` give user control |
 
 ### Memory estimation: CPU + GPU vs GPU only
 
 | Approach | Pros | Cons | Verdict |
 |----------|------|------|---------|
-| Both CPU and GPU | Consistent with DTCWT Motion Mag | CPU path is streaming (tiny memory footprint), check is pointless | Rejected — would always pass |
-| GPU only | Targets actual OOM risk | No CPU protection | **Chosen** — CPU path streams frames, only stores phase_signals array (~KB), OOM is not a realistic risk |
+| Both CPU and GPU | Consistent with DTCWT Motion Mag | CPU path is streaming (tiny memory footprint), check is pointless | Rejected, it would always pass |
+| GPU only | Targets actual OOM risk | No CPU protection | **Chosen.** The CPU path streams frames, only stores phase_signals array (~KB), OOM is not a realistic risk |
 
 ### Version: 1.1.0 vs 2.0.0
 
 | Approach | Pros | Cons | Verdict |
 |----------|------|------|---------|
-| 1.1.0 | Lower number | Violates semver — removing CLI flags is breaking | Rejected |
-| 2.0.0 | Semver correct, matches DTCWT precedent | Higher number | **Chosen** — breaking changes require major bump |
+| 1.1.0 | Lower number | Violates semver, because removing CLI flags is breaking | Rejected |
+| 2.0.0 | Semver correct, matches DTCWT precedent | Higher number | **Chosen.** Breaking changes require a major bump |
 
 ## Tradeoffs and Risks
 
@@ -265,4 +267,4 @@ Same structure as EVM/DTCWT repos:
 
 ## Open Questions
 
-None — all decisions resolved during PRD and grill phases.
+None. All decisions were resolved during the PRD and grill phases.

@@ -1,4 +1,4 @@
-"""Unit tests for visualmic.py — CPU path."""
+"""Unit tests for visualmic.py, CPU path."""
 
 import os
 import subprocess
@@ -73,7 +73,7 @@ class TestPostprocessPhaseSignals:
         result = visualmic.postprocess_phase_signals(
             phase_signals, fps=100
         )
-        # Constant input → constant sum
+        # Constant input gives a constant sum
         # Normalization maps constant to zero
         assert result.shape == (frame_count,)
         assert np.all(np.isfinite(result))

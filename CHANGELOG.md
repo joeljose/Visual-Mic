@@ -7,28 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed (output differs from 2.0.0)
-- Sub-bands are combined into horizontal and vertical motion and projected onto the dominant vibration direction, instead of being aligned by cross-correlation and summed. On the MIT Chips2 video the alignment picked lags up to the full clip length; SNR against the played sound goes from -11.1 dB to -3.8 dB. Rigid vertical motion, which half the orientations see inverted, is now recovered (synthetic: -19.5 dB with plain summing, 16 dB now).
-- A high-pass filter is applied by default at fps/40, clamped to 20-100 Hz, as in Davis et al. `--no-filter` disables it.
+### Changed
+- The output differs from 2.0.0. Sub-bands are now combined into horizontal and vertical motion and projected onto the main vibration direction, instead of being aligned by cross-correlation and summed. On the MIT Chips2 video the old alignment picked lags as long as the whole clip. SNR against the played sound goes from -11.1 dB to -3.8 dB. Rigid vertical motion, which half the orientations see upside down, now comes through (synthetic test: -19.5 dB with plain summing, 16 dB now).
+- A high-pass filter is on by default, at fps/40 kept within 20 to 100 Hz, as in Davis et al. `--no-filter` turns it off.
+- The CPU image uses `opencv-python-headless` and no apt packages (1.09 GB to 757 MB).
+- The GPU image is built on `python:3.11-slim` with the torch 2.1.2 CUDA wheels instead of `pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime` (about 2 GB smaller unpacked).
+- `pytorch_wavelets` is pinned to a commit.
+- Images use a fixed non-root user (uid 1000) instead of `UID`/`GID`/`UNAME` build args. Run with `--user "$(id -u):$(id -g)"` for bind mounts.
+- CI runs pytest. The GPU image is built only when its inputs change.
 
 ### Added
-- `--denoise`: spectral subtraction with a median noise estimate, removing steady hum and light flicker (Chips2: SNR -2.9 dB, segSNR -1.3 dB; MIT's published result: -4.0 dB, -1.1 dB)
-- `scripts/eval_audio.py`: scores recovered audio against the played sound (SNR, segmental SNR, coherence)
-- Synthetic recovery tests with known sub-pixel motion (`tests/test_recovery.py`)
+- `--denoise`: spectral subtraction with a median noise estimate. It removes steady hum and light flicker (Chips2: SNR -2.9 dB, segSNR -1.3 dB; MIT's published result: -4.0 dB, -1.1 dB).
+- `scripts/eval_audio.py` scores recovered audio against the played sound (SNR, segmental SNR, coherence).
+- Synthetic recovery tests with known sub-pixel motion (`tests/test_recovery.py`).
 
 ### Removed
-- `find_best_shift` and the `ref_level`/`ref_orient` parameters
+- `find_best_shift` and the `ref_level`/`ref_orient` parameters.
 
 ### Fixed
-- CPU install pulled NumPy 2, which breaks `dtcwt` (`np.asfarray` removed); NumPy is now `<2`
-- CI broke on ruff 0.16; dev tools are now pinned (`ruff==0.15.7`, `pytest==8.4.2`)
-
-### Changed
-- CPU image uses `opencv-python-headless` and no apt packages (1.09 GB to 757 MB)
-- GPU image is built on `python:3.11-slim` with the torch 2.1.2 CUDA wheels instead of `pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime` (about 2 GB smaller unpacked)
-- `pytorch_wavelets` is pinned to a commit
-- Images use a fixed non-root user (uid 1000) instead of `UID`/`GID`/`UNAME` build args; run with `--user "$(id -u):$(id -g)"` for bind mounts
-- CI runs pytest; the GPU image is built only when its inputs change
+- The CPU install pulled NumPy 2, which breaks `dtcwt` (`np.asfarray` was removed). NumPy is now `<2`.
+- CI broke on ruff 0.16. Dev tools are now pinned (`ruff==0.15.7`, `pytest==8.4.2`).
 
 ## [2.0.0] - 2026-03-21
 
