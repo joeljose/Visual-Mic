@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
 
 COPY --chown=app:app visualmic.py .
 COPY --chown=app:app tests/ tests/
+COPY --chown=app:app scripts/ scripts/
 
 ARG VERSION
 LABEL version=${VERSION}

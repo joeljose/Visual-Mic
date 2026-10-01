@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/joeljose/Visual-Mic/actions/workflows/ci.yml/badge.svg)](https://github.com/joeljose/Visual-Mic/actions/workflows/ci.yml)
 
-A Python implementation of the [Visual Microphone](https://people.csail.mit.edu/mrub/VisualMic/) algorithm, which recovers sound from high-speed video by analyzing sub-pixel surface vibrations. When sound hits an object, it causes tiny vibrations on the surface—far too small to see with the naked eye, but detectable in the phase of complex wavelet coefficients. This tool extracts those vibrations and reconstructs an audible signal, effectively turning everyday objects into microphones.
+A Python implementation of the [Visual Microphone](https://people.csail.mit.edu/mrub/VisualMic/) algorithm, which recovers sound from high-speed video by analyzing sub-pixel surface vibrations. When sound hits an object, it makes the surface vibrate by tiny amounts. They are far too small to see with the naked eye, but they show up in the phase of complex wavelet coefficients. This tool measures those vibrations and turns them back into sound, so a bag of chips or a plant leaf becomes a microphone.
 
 The original work by [Davis et al. (MIT CSAIL, SIGGRAPH 2014)](https://people.csail.mit.edu/mrub/papers/VisualMic_SIGGRAPH2014.pdf) used Complex Steerable Pyramids for the video decomposition. This project uses **2D Dual-Tree Complex Wavelet Transform (DTCWT)** instead, which is ~5x more computationally efficient while still providing reliable phase information for motion estimation. We test against the same high-speed videos provided by MIT CSAIL.
 
-The sample videos can be downloaded from [here](https://data.csail.mit.edu/vidmag/VisualMic/). For example, `Chips1-2200Hz-Mary_Had-input.avi` is a high-speed video of a bag of chips vibrating to "Mary Had A Little Lamb" (704x704, 22,859 frames captured at 2200 fps, ~14 GB). **Note:** the AVI container reports ~30 fps, but the actual capture rate is 2200 Hz — use `--fps 2200` when running `visualmic.py` to get the correct audio sample rate.
+The sample videos can be downloaded from [here](https://data.csail.mit.edu/vidmag/VisualMic/). For example, `Chips1-2200Hz-Mary_Had-input.avi` is a high-speed video of a bag of chips vibrating to "Mary Had A Little Lamb" (704x704, 22,859 frames captured at 2200 fps, ~14 GB). **Note:** the AVI container reports ~30 fps, but the actual capture rate is 2200 Hz. Use `--fps 2200` when running `visualmic.py` to get the correct audio sample rate.
 
 ![](assets/vmic.png)
 
@@ -31,13 +31,13 @@ The sample videos can be downloaded from [here](https://data.csail.mit.edu/vidma
   - [1.2 Why Not Just Track Pixels?](#12-why-not-just-track-pixels)
   - [1.3 The Key Insight: Phase = Motion](#13-the-key-insight-phase--motion)
   - [1.4 Complex Steerable Pyramid](#14-complex-steerable-pyramid)
-  - [1.5 The Original Algorithm](#15-the-original-algorithm--step-by-step)
+  - [1.5 The Original Algorithm](#15-the-original-algorithm-step-by-step)
   - [1.6 Rolling Shutter Trick](#16-rolling-shutter-trick-consumer-cameras)
   - [1.7 Limitations](#17-limitations-of-the-original)
 - [Part 2: Our Implementation (2D DTCWT)](#part-2-our-implementation-2d-dtcwt)
   - [2.1 What is the DTCWT?](#21-what-is-the-dual-tree-complex-wavelet-transform)
   - [2.2 DTCWT vs Steerable Pyramid](#22-dtcwt-vs-complex-steerable-pyramid)
-  - [2.3 Algorithm Mapped to Code](#23-our-algorithm--mapped-to-code)
+  - [2.3 Algorithm Mapped to Code](#23-our-algorithm-mapped-to-code)
   - [2.4 Parameters](#24-parameters-used)
   - [2.5 What Each Scale Captures](#25-what-each-scale-captures)
 - [Part 3: Literature Survey](#part-3-literature-survey)
@@ -61,7 +61,7 @@ pip install -r requirements.txt
 python visualmic.py -i testvid.avi -o recovered_audio.wav
 ```
 
-**Requirements:** Python 3.8+
+**Requirements:** Python 3.11 (the version the Docker images and CI use; older versions are untested)
 
 ### B. Docker (CPU)
 
@@ -124,22 +124,26 @@ python visualmic.py -i testvid.avi --biort near_sym_a --qshift qshift_a
 |---|---|---|
 | `-i / --input` | *(required)* | Input video path |
 | `-o / --output` | `sound.wav` | Output audio path |
-| `-fl / --freq-low` | — | Lower cutoff frequency (Hz) for temporal bandpass filter |
-| `-fh / --freq-high` | — | Upper cutoff frequency (Hz) for temporal bandpass filter |
-| `--fps` | — | Override video frame rate (Hz) for audio sample rate |
-| `--roi` | — | Region of interest as `x,y,w,h` |
+| `-fl / --freq-low` | fps/40, kept within 20 to 100 Hz | Lower cutoff frequency (Hz) for temporal bandpass filter |
+| `-fh / --freq-high` | none | Upper cutoff frequency (Hz) for temporal bandpass filter |
+| `--no-filter` | off | Disable the default high-pass (raw phase signals) |
+| `--denoise` | off | Spectral subtraction of stationary noise (hum, light flicker, sensor noise) |
+| `--fps` | from the video | Override video frame rate (Hz) for audio sample rate |
+| `--roi` | whole frame | Region of interest as `x,y,w,h` |
 | `--gpu` | off | Use GPU-accelerated DTCWT (requires CUDA + pytorch_wavelets) |
 | `--batch-size` | 16 | Frames per GPU batch (GPU mode only) |
 | `--nlevels` | 3 | Number of DTCWT decomposition levels |
 | `--biort` | `near_sym_b` | Biorthogonal wavelet filter for DTCWT level 1 |
 | `--qshift` | `qshift_b` | Quarter-shift wavelet filter for DTCWT levels 2+ |
-| `--version` | — | Show program version and exit |
+| `--version` | | Show program version and exit |
 
 **Available wavelet filters:**
 - `--biort`: `antonini`, `legall`, `near_sym_a`, `near_sym_b`
 - `--qshift`: `qshift_06`, `qshift_a`, `qshift_b`, `qshift_c`, `qshift_d`
 
-When `-fl` and/or `-fh` are specified, a Butterworth filter is applied to the phase signals before audio reconstruction, rejecting low-frequency drift and high-frequency noise.
+A Butterworth high-pass is applied to the phase signals by default, at 1/20 of the Nyquist frequency (fps/40), kept within 20 to 100 Hz. That is the rule Davis et al. used, and it gives 55 Hz at 2200 fps. It rejects slow drift, which would otherwise swamp the audio. `-fl` and `-fh` set the band explicitly; `--no-filter` turns it off.
+
+When `--denoise` is specified, stationary noise is removed by spectral subtraction. The noise level of each frequency is estimated as its median over the whole clip, so steady hum and light flicker (multiples of 50/60 Hz) are suppressed while the recovered sound, which comes and goes, is kept.
 
 When `--fps` is specified, the given value is used as the audio sample rate instead of the frame rate reported by the video container. This is necessary for high-speed camera footage where the container frame rate does not reflect the actual capture rate.
 
@@ -147,17 +151,18 @@ When `--roi` is specified, each frame is cropped to the given rectangle before t
 
 ### Tips
 
-- Start with default settings and adjust from there.
-- Use `--roi` to focus on the vibrating object — improves SNR and reduces computation.
+- Always pass the true capture rate with `--fps`; the high-pass cutoff and output sample rate depend on it.
+- Add `--denoise` for listening; leave it off when you need the raw motion signal.
+- Use `--roi` to crop to the vibrating object. It cuts computation, and it can raise SNR when much of the frame is background.
 - For MIT CSAIL videos, always use `--fps 2200` (the container reports ~30 fps incorrectly).
-- Use `--gpu` for large videos — the DTCWT forward pass is the main bottleneck.
+- Use `--gpu` for large videos. The DTCWT forward pass takes most of the time.
 - If GPU runs out of memory, reduce `--batch-size`.
 
 ---
 
 ## GPU Acceleration
 
-The `--gpu` flag enables GPU-accelerated processing via [PyTorch](https://pytorch.org/) and [`pytorch_wavelets`](https://github.com/fbcotter/pytorch_wavelets). The GPU path replaces the CPU DTCWT forward transform with a CUDA-accelerated batched equivalent while keeping the same algorithmic pipeline. Temporal postprocessing (bandpass filtering, cross-correlation, sub-band summation) remains on CPU/NumPy since it operates on the small phase signal array, not full wavelet coefficients.
+The `--gpu` flag enables GPU-accelerated processing via [PyTorch](https://pytorch.org/) and [`pytorch_wavelets`](https://github.com/fbcotter/pytorch_wavelets). The GPU path replaces the CPU DTCWT forward transform with a CUDA-accelerated batched equivalent while keeping the same algorithmic pipeline. Temporal postprocessing (filtering, combining the sub-bands, denoising) stays on the CPU in NumPy, because it works on the small phase signal array, not on the full wavelet coefficients.
 
 ### Batched DTCWT Architecture
 
@@ -167,10 +172,10 @@ The GPU path processes frames in configurable batches rather than one at a time:
 2. **GPU transfer**: The batch is stacked into a `(B, 1, H, W)` float32 tensor and sent to GPU
 3. **Batched forward DTCWT**: `pytorch_wavelets.DTCWTForward` processes all frames in the batch simultaneously, producing `Yh[level]` with shape `(B, 1, 6, H_l, W_l, 2)` where the last dimension is real/imaginary
 4. **Phase extraction**: Performed on-GPU for the entire batch (see below)
-5. **Transfer back**: Only the small phase signal array `(B, nlevels, 6)` is transferred to CPU — the full wavelet coefficients are discarded
+5. **Transfer back**: Only the small phase signal array `(B, nlevels, 6)` is copied back to the CPU. The full wavelet coefficients are discarded
 6. **Memory cleanup**: GPU tensors are explicitly deleted (`del batch_tensor, Yl, Yh`) after each batch
 
-This streaming architecture means GPU memory usage is proportional to `batch_size`, not `frame_count` — enabling processing of arbitrarily long videos.
+This streaming architecture means GPU memory usage is proportional to `batch_size`, not `frame_count`, so a video of any length fits.
 
 ### GPU Phase Extraction
 
@@ -230,23 +235,23 @@ Benchmarked on Chips2-2200Hz-Mary_MIDI-input.avi (704x400, 38,083 frames, 2200 f
 **Paper:** *"The Visual Microphone: Passive Recovery of Sound from Video"*
 **Authors:** Abe Davis, Michael Rubinstein, Neal Wadhwa, Gautham J. Mysore, Frédo Durand, William T. Freeman
 **Venue:** ACM Transactions on Graphics (SIGGRAPH 2014), Vol 33, No 4
-**Institutions:** MIT CSAIL, Stanford, Adobe Research
+**Institutions:** MIT CSAIL, Microsoft Research, Adobe Research
 
 ## 1.1 The Physical Phenomenon
 
-When sound travels through air, it creates pressure waves. When these waves hit an object's surface, they cause **tiny vibrations** — displacements on the order of micrometers or less. These vibrations are far too small to see with the naked eye, but a high-speed camera recording thousands of frames per second can capture them as subtle pixel-level changes.
+When sound travels through air, it creates pressure waves. When these waves hit an object's surface, they make it vibrate. The displacements are about a micrometer or less (the paper measured this with a laser vibrometer). These vibrations are far too small to see with the naked eye, but a high-speed camera recording thousands of frames per second can capture them as subtle pixel-level changes.
 
-**Key insight:** If we can measure those sub-pixel surface displacements over time, we effectively have a recording of the sound pressure wave — we've turned the object into a microphone.
+So if we can measure those sub-pixel displacements over time, we have a recording of the sound. The object has become a microphone.
 
-**Example:** Playing "Mary Had A Little Lamb" near a bag of chips causes the bag's surface to vibrate at the frequencies of the music. A high-speed camera (2000–6000 fps) pointed at the bag captures these vibrations as tiny frame-to-frame changes.
+**Example:** Playing "Mary Had A Little Lamb" near a bag of chips causes the bag's surface to vibrate at the frequencies of the music. A high-speed camera (the paper used 2 kHz to 20 kHz) pointed at the bag captures these vibrations as tiny frame-to-frame changes.
 
 ## 1.2 Why Not Just Track Pixels?
 
 You might think: "Just compute optical flow between frames and track the motion." The problem:
 
-1. **The motions are sub-pixel** — typically $\frac{1}{100}$ to $\frac{1}{1000}$ of a pixel. Standard optical flow fails at this scale.
-2. **Noise dominates** — sensor noise, quantization noise, and lighting fluctuations are all larger than the actual vibration signal.
-3. **You need temporal precision** — to recover audio at meaningful frequencies, you need to track motion at every single frame with high temporal fidelity.
+1. **The motions are sub-pixel**, typically $\frac{1}{100}$ to $\frac{1}{1000}$ of a pixel. Standard optical flow fails at this scale.
+2. **Noise dominates.** Sensor noise, quantization and lighting flicker are all larger than the vibration in any one pixel.
+3. **Every frame counts.** Each frame is one audio sample, so the motion has to be measured in every frame, not smoothed over several.
 
 **Solution:** Instead of tracking pixels in the spatial domain, work in the **frequency domain** using the **phase** of complex wavelet/pyramid coefficients. Phase is far more sensitive to small motions than amplitude.
 
@@ -266,7 +271,7 @@ For a band-pass filtered signal at spatial frequency $\omega_0$:
 
 $$\Delta\phi \approx \omega_0 \cdot \delta$$
 
-where $\delta$ is the local displacement. **This is the foundation of the entire method.**
+where $\delta$ is the local displacement. The whole method rests on this.
 
 ### Why phase is better than amplitude
 
@@ -274,7 +279,7 @@ where $\delta$ is the local displacement. **This is the foundation of the entire
 |----------|---------------|--------------|
 | Physical meaning | "How much texture is here" | "Where exactly is this texture positioned" |
 | Response to small motion | Relatively stable | Shifts linearly with displacement |
-| Sub-pixel sensitivity | Poor | Excellent — detects fractions of a pixel |
+| Sub-pixel sensitivity | Poor | Excellent, detects fractions of a pixel |
 
 ## 1.4 Complex Steerable Pyramid
 
@@ -300,7 +305,7 @@ where:
 
 ### Why "steerable"?
 
-The filters can be analytically rotated to any orientation without recomputing — this gives fine directional control and avoids aliasing artifacts.
+The filters can be rotated to any orientation analytically, without recomputing. That gives fine control over direction and avoids aliasing artifacts.
 
 ### Key Properties
 
@@ -308,7 +313,7 @@ The filters can be analytically rotated to any orientation without recomputing �
 - **Overcomplete** (~21x for 8 orientations): more coefficients than pixels $\rightarrow$ redundancy helps with noise
 - **Shift-invariant:** no downsampling artifacts that would corrupt phase measurements
 
-## 1.5 The Original Algorithm — Step by Step
+## 1.5 The Original Algorithm, Step by Step
 
 ### Input
 
@@ -321,7 +326,7 @@ For each frame $t = 0, 1, \ldots, N-1$:
 
 $$\{C(s, \theta, x, y, t)\} = \text{ComplexSteerablePyramid}(V(:,:,t))$$
 
-This gives complex coefficients at $S$ scales and $K$ orientations.
+This gives complex coefficients at $S$ scales and $K$ orientations. The paper used 4 scales and 2 orientations.
 
 ### Step 2: Extract Amplitude and Phase
 
@@ -339,7 +344,7 @@ $$\phi_v(s, \theta, x, y, t) = \phi(s, \theta, x, y, t) - \phi(s, \theta, x, y, 
 
 This phase difference is proportional to how much the texture at location $(x, y)$ has moved since the reference frame, at that particular scale and orientation.
 
-**Why subtract the reference?** The absolute phase values encode the texture pattern itself (which we don't care about). By subtracting the reference, we isolate the *change* — which is the vibration.
+**Why subtract the reference?** The absolute phase values encode the texture pattern itself (which we don't care about). By subtracting the reference, we keep only the *change*, and the change is the vibration.
 
 ### Step 4: Compute Global Motion Signal (Amplitude-Weighted Spatial Average)
 
@@ -349,8 +354,8 @@ $$\Phi(s, \theta, t) = \sum_{x,y} A(s, \theta, x, y, t)^2 \cdot \phi_v(s, \theta
 
 **Why weight by $A^2$?**
 - Regions with strong texture (high amplitude) give **reliable** phase measurements
-- Regions with weak/no texture (low amplitude) have **noisy/random** phase — we want to suppress these
-- $A^2$ weighting is effectively a "reliability-weighted average" that emphasizes trustworthy measurements
+- Regions with weak/no texture (low amplitude) have **noisy/random** phase, and we want to suppress them
+- $A^2$ weighting is a reliability-weighted average: trustworthy measurements count more
 
 This produces one 1D time signal per $(s, \theta)$ pair.
 
@@ -369,43 +374,39 @@ $$\tau(s, \theta) = \arg\max_{\tau} \sum_t \text{ref}(t) \cdot \Phi(s, \theta, t
 
 $$\hat{s}(t) = \sum_{s, \theta} \Phi(s, \theta, t - \tau(s, \theta))$$
 
-This averaging acts as denoising — the vibration signal is **coherent** across sub-bands (adds constructively) while noise is **incoherent** (partially cancels).
+Averaging also removes noise. The vibration is the same in every sub-band, so it adds up, while the noise differs from band to band and partly cancels.
 
-### Step 7: Normalize
+### Step 7: Filter and Denoise
+
+The paper high-passes the result at 20 to 100 Hz (for most examples 1/20 of the Nyquist frequency) to remove low-frequency noise that isn't sound. For very noisy videos it filters each sub-band before the alignment instead. Then it denoises: spectral subtraction when the goal is accuracy, or a speech enhancement method (Loizou 2005) when the goal is intelligibility. Every result in the paper is denoised.
+
+### Step 8: Normalize
 
 $$\hat{s}_{\text{norm}}(t) = \frac{2 \cdot \hat{s}(t) - (\max + \min)}{\max - \min}$$
 
 Maps the signal to $[-1, 1]$ range.
 
-### Step 8: Output Audio
+### Step 9: Output Audio
 
 Write as WAV file with **sampling rate = video FPS**.
 
-> **Critical:** If the video is 2200 fps, the audio is sampled at 2200 Hz. By the Nyquist theorem, this captures frequencies up to 1100 Hz — covering most speech fundamental frequencies and low musical tones.
+> If the video is 2200 fps, the audio is sampled at 2200 Hz. By the Nyquist theorem it holds frequencies up to 1100 Hz. That covers the fundamental frequency of most voices and of low musical notes.
 
 ## 1.6 Rolling Shutter Trick (Consumer Cameras)
 
-High-speed cameras are expensive. But most consumer cameras have **rolling shutter** — the sensor reads rows sequentially, not all at once. Each row is exposed at a slightly different time.
+High-speed cameras are expensive. Most ordinary cameras have a **rolling shutter**: the sensor reads its rows one after another, not all at once, so each row is a picture of a slightly different moment.
 
-For a 60 fps camera with 480 rows:
-- Each row is a separate temporal sample
-- Effective sampling rate: $60 \times 480 / 60 \approx 480$ Hz (8x boost)
-- Sufficient to capture speech fundamentals
+The paper uses this to get audio from a normal 60 fps camera. If the object moves horizontally, the horizontal shift of each row is one audio sample, so the sample rate becomes the row rate instead of the frame rate. Their Pentax K-01 recorded 1280x720 at 60 fps with a row delay of 16 microseconds. That gives 61,920 samples per second. About 30% of them are missing, because the sensor pauses for 5 ms between frames, and the paper fills the gaps with an audio interpolation method.
 
-The algorithm adapts by:
-1. Treating each row as a separate temporal sample
-2. Computing 1D transforms along rows instead of 2D pyramids
-3. Stitching the temporal information together
-
-This allowed recovering intelligible speech from a **standard 60 fps consumer camera**.
+The exposure time sets the real limit. A row exposed for 1/2000 s blurs any vibration faster than about 2000 Hz. The recovered sound (a recording of "The Raven" played near a bag of candy) is shown as a spectrogram in the paper. This project does not implement the rolling shutter method.
 
 ## 1.7 Limitations of the Original
 
 1. **Requires high-speed video** for good quality (2000+ fps ideal; 60 fps with rolling shutter is limited)
-2. **Object must have visible texture** — smooth featureless surfaces give poor results
-3. **Sound-to-noise ratio** depends on object material, distance, and sound volume
-4. **Computationally expensive** — complex steerable pyramids are ~21x overcomplete
-5. **Global averaging loses spatial information** — all vibrations are mixed together
+2. **Object must have visible texture.** Smooth, featureless surfaces give poor results
+3. **Signal-to-noise ratio** depends on the object's material, the distance, and the sound volume
+4. **Computationally expensive.** The paper reports 2 to 3 hours per video in MATLAB
+5. **Global averaging loses spatial information.** All vibrations are mixed together
 
 ---
 
@@ -418,7 +419,7 @@ The DTCWT was developed by **Nick Kingsbury** (Cambridge, late 1990s) as an impr
 ### The problem with standard DWT
 
 - **Not shift-invariant:** shifting input by 1 pixel completely changes the coefficients
-- **Poor directional selectivity:** only separates horizontal, vertical, diagonal — no fine orientations
+- **Poor directional selectivity:** only separates horizontal, vertical and diagonal, with no finer orientations
 - **Oscillating coefficients:** makes phase extraction unreliable
 
 ### How DTCWT works
@@ -461,18 +462,18 @@ This is fewer orientations than a typical steerable pyramid (which might use 8+)
 | Python library | `pyrtools` | `dtcwt` |
 | Reconstruction | Perfect | Near-perfect |
 
-**Trade-off:** DTCWT is ~5x more computationally efficient at the cost of slightly fewer orientations and approximate (rather than exact) shift invariance. For the visual microphone application, this is a favorable trade-off — the phase information is still good enough to detect sub-pixel vibrations.
+**Trade-off:** DTCWT is ~5x more computationally efficient at the cost of slightly fewer orientations and approximate (rather than exact) shift invariance. For the visual microphone that is a good trade: the phase is still good enough to detect sub-pixel vibrations.
 
-## 2.3 Our Algorithm — Mapped to Code
+## 2.3 Our Algorithm, Mapped to Code
 
-Here's how `visualmic.py` implements the pipeline, with line references.
+This is how `visualmic.py` implements the pipeline. The snippets are simplified from the source.
 
-### Steps 1–3: Stream Video, ROI Crop, DTCWT, and Phase Extraction
+### Steps 1 to 3: Stream Video, ROI Crop, DTCWT, and Phase Extraction
 
-Frames are streamed directly from the video file — each frame is read, transformed, and discarded immediately, so only one raw frame is in memory at a time. This enables processing of arbitrarily long videos without running out of memory. If an ROI is specified, each frame is cropped before the DTCWT decomposition, reducing computation and focusing on the vibrating object.
+Frames are streamed from the video file. Each frame is read, transformed and discarded, so only one raw frame is in memory at a time, and a video of any length fits in memory. If an ROI is specified, each frame is cropped before the DTCWT decomposition, reducing computation and focusing on the vibrating object.
 
 ```python
-def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, ..., roi=None):
+def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, ..., roi=None, denoise=False):
     transform = dtcwt.Transform2d()
     ref_conj = None
     phase_signals = []
@@ -512,19 +513,14 @@ Vectorized NumPy operations on entire 2D spatial slices:
 
 The conjugate multiplication `coeffs * conj(ref)` computes the phase difference directly: `angle(z * conj(w)) = angle(z) - angle(w)`, automatically wrapped to $[-\pi, \pi]$. This is more numerically stable than computing phases separately and subtracting.
 
-**Result:** `phase_signals[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
+**Result:** `phase_signals[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$, one number per frame per sub-band.
 
-### Step 3.5: Temporal Bandpass Filtering (optional)
+### Step 3.5: Temporal Bandpass Filtering
 
-When `-fl` and/or `-fh` are specified, a 4th-order Butterworth filter is applied to each of the 18 phase signals before cross-correlation:
+A 4th-order Butterworth filter is applied to all 18 phase signals at once. By default it is a high-pass at `default_freq_low(fps)` (fps/40, kept within 20 to 100 Hz); `-fl`/`-fh` override it and `--no-filter` disables it:
 
 ```python
-nyquist = fps / 2.0
-sos = signal.butter(4, [freq_low / nyquist, freq_high_clamped / nyquist],
-                    btype='bandpass', output='sos')
-for i in range(nlevels):
-    for j in range(n_orient):
-        phase_signals[:, i, j] = signal.sosfiltfilt(sos, phase_signals[:, i, j])
+phase_signals = signal.sosfiltfilt(sos, phase_signals, axis=0)
 ```
 
 - `sosfiltfilt` applies the filter forward and backward (zero-phase), so no time delay is introduced
@@ -533,30 +529,27 @@ for i in range(nlevels):
 - Skipped if video has fewer than 13 frames (minimum required for `filtfilt`)
 - If only `-fl` is given, acts as highpass; if only `-fh`, acts as lowpass
 
-### Step 4: Temporal Alignment via Cross-Correlation
+### Step 4: Combine Sub-bands Along the Vibration Direction
+
+Each orientation band measures the image motion projected onto its own direction. The six DTCWT orientations point at 15°, 45° and 75°, and at 105°, 135° and 165°. The last three respond like −75°, −45° and −15°, so they see vertical motion upside down. The bands are combined into horizontal and vertical motion, and the audio is the motion along the dominant vibration direction:
 
 ```python
-ref_vector = phase_signals[:, ref_level, ref_orient].reshape(-1)
-for i in range(nlevels):
-    for j in range(n_orient):
-        shift_matrix[i, j] = find_best_shift(ref_vector, phase_signals[:, i, j].reshape(-1))
+ORIENT_ANGLES = np.deg2rad([15, 45, 75, -75, -45, -15])
+dx = (phase_signals * np.cos(ORIENT_ANGLES)).sum(axis=(1, 2))
+dy = (phase_signals * np.sin(ORIENT_ANGLES)).sum(axis=(1, 2))
+u = vibration_direction(dx, dy, fps)   # principal axis after removing stationary noise
+sound_raw = u[0] * dx + u[1] * dy
 ```
 
-The `find_best_shift` function uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
+**Why not align sub-bands like the original?** Davis et al. shift each band in time to best match a reference band (Step 5 of the original). On the MIT Chips2 video that picked arbitrary lags, up to the full clip length, and cost 7 dB of SNR: a deforming bag's sub-bands aren't time-shifted copies of each other. Plain summing works on the bag but cancels rigid vertical motion. Projecting the 2D motion handles both. The direction is estimated after spectral subtraction, so hum and light flicker don't decide it.
+
+### Step 5: Optional Denoising (`--denoise`)
+
+Spectral subtraction (Boll 1979), as in the original's Section 3.3, with the noise of each frequency estimated as its median power over the whole clip:
 
 ```python
-def find_best_shift(a, b):
-    correlation = signal.correlate(a, b, mode='full')
-    return np.argmax(correlation) - (len(b) - 1)
-```
-
-### Step 5: Sum Across Sub-bands with Temporal Shifts
-
-```python
-sound_raw = np.zeros(frame_count)
-for i in range(nlevels):
-    for j in range(n_orient):
-        sound_raw += np.roll(phase_signals[:, i, j], int(shift_matrix[i, j]))
+noise = np.median(power, axis=1, keepdims=True)
+gain = np.sqrt(np.maximum(1 - alpha * noise / power, beta ** 2))   # alpha=2, beta=0.05
 ```
 
 ### Step 6: Normalize to $[-1, 1]$
@@ -578,7 +571,7 @@ def save_wav(samples, output_name, sample_rate):
     write(output_name, sample_rate, waveform_integers)
 ```
 
-The `sample_rate` is set to the video's FPS, ensuring the output audio matches the temporal resolution of the input video.
+The sample rate is the frame rate (from the video, or from `--fps`), truncated to a whole number. One frame becomes one audio sample.
 
 ## 2.4 Parameters Used
 
@@ -587,8 +580,8 @@ The `sample_rate` is set to the video's FPS, ensuring the output audio matches t
 | `nlevels` | 3 | Number of wavelet decomposition scales |
 | `n_orient` | 6 | Number of orientations per scale (fixed by DTCWT) |
 | `ref_index` | 0 | Reference frame index (first frame) |
-| `ref_level` | 0 | Reference sub-band: finest scale |
-| `ref_orient` | 0 | Reference sub-band: first orientation (~$+15°$) |
+| `freq_low` | fps/40, within 20 to 100 Hz | High-pass cutoff |
+| `alpha`, `beta` | 2.0, 0.05 | Over-subtraction and gain floor of `--denoise` |
 | `biort` | `near_sym_b` | Biorthogonal filter for level 1 |
 | `qshift` | `qshift_b` | Quarter-shift filter for levels 2+ |
 
@@ -624,11 +617,11 @@ The vibration signal is present across all scales (the whole surface moves), but
 
 | Year | Work | Advance |
 |------|------|---------|
-| 2018 | Local Visual Microphones | Local vibration aggregation (not global averaging), 100–1000x speedup, sound direction estimation |
+| 2018 | Local Visual Microphones | Local vibration aggregation (not global averaging), 100 to 1000x speedup, sound direction estimation |
 | 2022 | Effect of Video Resolution | Studies resolution impact on recovery quality; frame-wise denoising preprocessing |
 | 2023 | Event-Based Visual Microphone (CVPR Workshop) | Neuromorphic event cameras for cheap, efficient vibration capture |
 | 2024 | PSO-CNN Hybrid | Particle Swarm Optimization + CNN for enhanced sound restoration |
-| 2025 | Single-Pixel Visual Microphone (Optica) | Single-pixel imaging with spatial light modulator — no expensive high-speed camera needed |
+| 2025 | Single-Pixel Visual Microphone (Optica) | Single-pixel imaging with a spatial light modulator, so no expensive high-speed camera is needed |
 
 ## Alternative Implementations
 
@@ -644,15 +637,34 @@ The vibration signal is present across all scales (the whole surface moves), but
 
 - **Multiprocessing across frames**: Frame processing is independent after the reference frame is computed. Reading frames remains sequential (VideoCapture limitation), but the DTCWT + phase extraction can be parallelized across CPU cores using batch processing with `multiprocessing.Pool`, giving ~Nx speedup on an N-core machine.
 
-- **Better post-processing / signal recovery**: The current algorithm uses properly wrapped phase differences (`np.angle(coeffs * conj(ref))`, bounded to [-π, π]), which is mathematically correct but produces lower-amplitude signals for very small vibrations. Exploring better post-processing — such as phase unwrapping, adaptive Wiener filtering, or learned denoising — could recover signal strength without reintroducing the phase wrapping artifacts.
+- **Phase wrapping under drift**: phase is measured against the first frame, so it wraps once the surface drifts by about half a wavelength of a band ([#17](https://github.com/joeljose/Visual-Mic/issues/17)). Frame-to-frame differences plus a cumulative sum would avoid it.
+
+- **Closing the gap to the original**: on Chips2, coherence with the played sound is 0.49 against 0.60 for MIT's result. Candidates: more scales, a different motion estimate, or equalising the object's frequency response (original Section 4.3).
 
 ---
 
 ## Development
 
+### Evaluating Recovered Audio
+
+The MIT dataset includes the sound that was played for each video (`*-input.wav`) and MIT's own result (`*-recovered.wav`). `scripts/eval_audio.py` aligns a recovered WAV to the played sound (lag and sign) and reports SNR, segmental SNR and coherence between 100 and 1000 Hz. Coherence ignores the object's frequency response, so it is the fairest single number.
+
+```bash
+python scripts/eval_audio.py sound.wav --ref Chips2-2200Hz-Mary_MIDI-input.wav
+```
+
+Chips2 (2200 fps, GPU):
+
+| Output | SNR (dB) | segSNR (dB) | Coherence |
+|---|---|---|---|
+| v2.0.0, default | −11.1 | −9.2 | 0.49 |
+| current, default | −3.8 | −3.2 | 0.49 |
+| current, `--denoise` | −2.9 | −1.3 | 0.49 |
+| MIT `recovered.wav` (denoised) | −4.0 | −1.1 | 0.60 |
+
 ### Running Tests
 
-All tests run inside Docker — no local Python dependencies needed:
+All tests run inside Docker, so you need no local Python dependencies:
 
 ```bash
 # CPU: lint + unit tests (builds image automatically if not found)
@@ -667,11 +679,15 @@ All tests run inside Docker — no local Python dependencies needed:
 ```
 
 **CPU tests** (`tests/test_visualmic.py`) cover:
-- Utility functions (`format_duration`, `find_best_shift`, `save_wav`)
-- Phase signal postprocessing (cross-correlation, normalization, Butterworth filter)
+- Utility functions (`format_duration`, `save_wav`, `default_freq_low`, `denoise_spectral`)
+- Phase signal postprocessing (normalization, Butterworth filter)
 - VRAM estimation arithmetic
 - Full `extract_audio` pipeline on synthetic 256x256 video (shape, finiteness)
 - All CLI validation error paths
+
+**Recovery tests** (`tests/test_recovery.py`) move a texture by a known sub-pixel amount, following a 100 to 1000 Hz chirp, and check that the recovered signal matches it. They cover horizontal, vertical and diagonal motion at the motion sizes the paper measured (0.005 to 0.01 px), drift, and the paper's rule that SNR rises 6 dB when the motion doubles. Known open bugs (#16, #17) are marked as expected failures.
+
+`tests/test_eval_audio.py` checks that `scripts/eval_audio.py` finds a known delay, sign and SNR.
 
 **GPU tests** (`tests/test_visualmic_gpu.py`) cover:
 - DTCWTForward shapes, finiteness, and custom filter selection
@@ -685,7 +701,7 @@ Version is tracked in a `VERSION` file at the project root. `visualmic.py` has `
 **To cut a release:**
 1. Update `VERSION` with the new version number
 2. Update `__version__` in `visualmic.py`
-3. Update `CHANGELOG.md` — move items from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`
+3. Update `CHANGELOG.md`: move items from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`
 4. Commit: `Release vX.Y.Z`
 5. Tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z"`
 6. Push: `git push && git push origin vX.Y.Z`
@@ -703,9 +719,13 @@ test.sh                    # Run lint + tests (Docker, supports cpu/gpu mode)
 requirements.txt           # CPU runtime dependencies
 requirements-gpu.txt       # GPU runtime dependencies
 requirements-dev.txt       # Dev dependencies (pytest, ruff)
+scripts/
+  eval_audio.py            # Score recovered audio against the played sound
 tests/
   test_visualmic.py        # CPU unit tests
   test_visualmic_gpu.py    # GPU unit tests (CUDA-only, skip on CPU)
+  test_recovery.py         # Recovery of known synthetic motion
+  test_eval_audio.py       # Check of the evaluation script
 docs/design/               # Architecture decision records
   visualmic-hardening.md   # Hardening design doc
 VERSION                    # Single source of truth for version
@@ -726,7 +746,7 @@ CONTRIBUTING.md            # Contribution guidelines
 3. Wadhwa, N., Rubinstein, M., Durand, F., & Freeman, W.T. (2014). *Riesz Pyramids for Fast Phase-Based Video Magnification.* IEEE ICCP.
    [Project Page](https://people.csail.mit.edu/nwadhwa/riesz-pyramid/)
 
-4. Selesnick, I.W., Baraniuk, R.G., & Kingsbury, N.G. (2005). *The Dual-Tree Complex Wavelet Transform.* IEEE Signal Processing Magazine, 22(6), 123–151.
+4. Selesnick, I.W., Baraniuk, R.G., & Kingsbury, N.G. (2005). *The Dual-Tree Complex Wavelet Transform.* IEEE Signal Processing Magazine, 22(6), 123-151.
    [Tutorial PDF](https://eeweb.engineering.nyu.edu/iselesni/pubs/CWT_Tutorial.pdf)
 
 5. Davis, A. (2016). *Visual Vibration Analysis.* PhD Thesis, MIT.
@@ -751,4 +771,4 @@ CONTRIBUTING.md            # Contribution guidelines
 <a href="https://github.com/joeljose" target="_blank"><img src=".github/images/gthb.png" width="30"></a>&nbsp;&nbsp;
 <a href="https://www.linkedin.com/in/joel-jose-527b80102/" target="_blank"><img src=".github/images/lnkdn.png" width="30"></a>
 
-<h3 align="center">Show your support by starring the repository 🙂</h3>
+<h3 align="center">If this was useful, star the repository.</h3>

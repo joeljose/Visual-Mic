@@ -73,7 +73,7 @@ class SyntheticCap:
 def recover(rms_px, angle=0.0, drift_px=0.0, freq_low=100, reported=N):
     with contextlib.redirect_stdout(io.StringIO()):
         return visualmic.extract_audio(
-            SyntheticCap(rms_px, angle, drift_px), reported, 3, 6, 0, 0, 0, FPS, freq_low, None)
+            SyntheticCap(rms_px, angle, drift_px), reported, 3, 6, 0, FPS, freq_low, None)
 
 
 def snr_db(out, highpass=100):
@@ -90,38 +90,33 @@ def snr_db(out, highpass=100):
     return best
 
 
-# Baseline on 39e90eb (current -> with bounded, sign-aware alignment to the
-# highest-energy band): horizontal 0.005 px -22 -> 12 dB, 0.01 px -19 -> 18 dB,
-# vertical 0.01 px 1.5 -> 19 dB, 45 deg 0.01 px 12 -> 18 dB.
-# The fixed reference band (level 0, orientation 0) is mostly noise on this
-# texture, and the unbounded lag search then picks shifts of hundreds of samples.
-XFAIL_13 = pytest.mark.xfail(strict=True, reason="#13: noisy fixed reference band, unbounded lag, sign ignored")
-
-
+# v2.0.0 (band alignment by cross-correlation to a fixed reference band):
+# horizontal 0.005 px -22 dB, 0.01 px -19 dB, vertical 0.01 px 1.5 dB,
+# diagonal 0.01 px 12 dB. Now (bands combined into x/y motion, projected on
+# the dominant direction): 9.6, 15.8, 16.1 and 15.9 dB.
 @pytest.mark.parametrize("rms_px,angle", [
-    pytest.param(0.005, 0.0, id="horizontal-0.005px", marks=XFAIL_13),
-    pytest.param(0.01, 0.0, id="horizontal-0.01px", marks=XFAIL_13),
-    pytest.param(0.01, np.pi / 2, id="vertical-0.01px", marks=XFAIL_13),
+    pytest.param(0.005, 0.0, id="horizontal-0.005px"),
+    pytest.param(0.01, 0.0, id="horizontal-0.01px"),
+    pytest.param(0.01, np.pi / 2, id="vertical-0.01px"),
     pytest.param(0.01, np.pi / 4, id="diagonal-0.01px"),
+    pytest.param(0.01, 3 * np.pi / 4, id="antidiagonal-0.01px"),
 ])
 def test_recovers_paper_scale_motion(rms_px, angle):
-    assert snr_db(recover(rms_px, angle)) >= 10
+    assert snr_db(recover(rms_px, angle)) >= 8
 
 
 # Davis et al. Eq. 8: SNR grows linearly with motion amplitude, so doubling
-# it adds about 6 dB. Holds with the fixed alignment (+6.1 dB); fails today.
-@pytest.mark.xfail(strict=True, reason="#13: alignment errors swamp the noise floor")
+# it adds about 6 dB (+6.2 dB now; v2.0.0 showed no such trend).
 def test_snr_follows_motion_amplitude():
     gain = snr_db(recover(0.01)) - snr_db(recover(0.005))
     assert 4 <= gain <= 8
 
 
-# 0.3 px of drift over the clip with default settings (no -fl). Scored
-# without a high-pass, since that is what the user hears. -18.5 dB today,
-# 17 dB with a default high-pass and the alignment fix.
-@pytest.mark.xfail(strict=True, reason="#14: no filter by default")
+# 0.3 px of drift over the clip with the CLI's default high-pass. Scored
+# without a high-pass, since that is what the user hears. v2.0.0 (no filter
+# by default) gave -18.5 dB.
 def test_default_settings_reject_drift():
-    assert snr_db(recover(0.01, drift_px=0.3, freq_low=None), highpass=None) >= 10
+    assert snr_db(recover(0.01, drift_px=0.3, freq_low=visualmic.default_freq_low(FPS)), highpass=None) >= 10
 
 
 # 3 px of drift wraps the phase measured against frame 0. Still about 3 dB

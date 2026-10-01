@@ -35,9 +35,36 @@ def format_duration(seconds):
 		return f"{h}h {m}m {s}s"
 
 
-def find_best_shift(a, b):
-	correlation = signal.correlate(a, b, mode='full')
-	return np.argmax(correlation) - (len(b) - 1)
+# Directions of the six DTCWT orientations (15, 45, ..., 165 deg). The 105-165
+# deg bands respond to motion like -75..-15 deg: their phase rises with
+# rightward motion, so their vertical response is inverted.
+ORIENT_ANGLES = np.deg2rad([15, 45, 75, -75, -45, -15])
+
+
+def default_freq_low(fps):
+	"""High-pass cutoff used unless -fl or --no-filter is given.
+
+	Davis et al. 2014 (Sec. 3.3) high-pass at 20-100 Hz, typically 1/20 of
+	Nyquist, to remove low-frequency drift and noise that isn't audio.
+	"""
+	return min(max(fps / 40.0, 20.0), 100.0)
+
+
+def denoise_spectral(samples, fs, alpha=2.0, beta=0.05):
+	"""Spectral subtraction (Boll 1979) with a stationary noise estimate.
+
+	The noise power of each frequency is its median over the whole clip:
+	sound comes and goes, while hum, light flicker and sensor noise stay.
+	alpha over-subtracts to suppress residual noise; beta is the gain floor.
+	"""
+	n = len(samples)
+	nperseg = min(256, n)
+	_, _, Z = signal.stft(samples, fs=fs, nperseg=nperseg)
+	power = np.abs(Z) ** 2
+	noise = np.median(power, axis=1, keepdims=True)
+	gain = np.sqrt(np.maximum(1 - alpha * noise / (power + 1e-20), beta ** 2))
+	_, out = signal.istft(Z * gain, fs=fs, nperseg=nperseg)
+	return np.pad(out, (0, max(0, n - len(out))))[:n]
 
 
 def save_wav(samples, output_name, sample_rate):
@@ -46,7 +73,22 @@ def save_wav(samples, output_name, sample_rate):
 	print(f"Output saved to {output_name}")
 
 
-def postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref_level, ref_orient, fps, freq_low=None, freq_high=None):
+def vibration_direction(dx, dy, fs):
+	"""Unit vector of the dominant vibration direction in the image plane.
+
+	Principal axis of the 2D motion after removing stationary noise, so that
+	hum and light flicker don't decide the direction. Sign is fixed (x >= 0).
+	"""
+	motion = np.stack([denoise_spectral(dx, fs), denoise_spectral(dy, fs)])
+	_, vectors = np.linalg.eigh(np.cov(motion))
+	u = vectors[:, -1]
+	return u if u[0] >= 0 else -u
+
+
+def postprocess_phase_signals(phase_signals, fps, freq_low=None, freq_high=None, denoise=False):
+	"""Turn per-band phase signals of shape (frames, levels, orientations) into audio."""
+	frame_count = len(phase_signals)
+
 	# Temporal bandpass filtering
 	nyquist = fps / 2.0
 	apply_filter = (freq_low is not None or freq_high is not None) and frame_count > 12
@@ -73,20 +115,20 @@ def postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref
 			print(f"Applying lowpass filter: {freq_high_clamped:.0f} Hz")
 
 	if apply_filter:
-		for i in range(nlevels):
-			for j in range(n_orient):
-				phase_signals[:, i, j] = signal.sosfiltfilt(sos, phase_signals[:, i, j])
+		phase_signals = signal.sosfiltfilt(sos, phase_signals, axis=0)
 
-	shift_matrix = np.zeros((nlevels, n_orient))
-	ref_vector = phase_signals[:, ref_level, ref_orient].reshape(-1)
-	for i in range(nlevels):
-		for j in range(n_orient):
-			shift_matrix[i, j] = find_best_shift(ref_vector, phase_signals[:, i, j].reshape(-1))
+	# Each orientation band measures the motion projected onto its direction.
+	# Combine them into x/y motion and take the dominant vibration direction.
+	# Davis et al. instead align bands by cross-correlation; on real footage
+	# (MIT Chips2) that picked arbitrary lags and cost 7 dB SNR, and plain
+	# summing cancels vertical motion, which half the orientations see inverted.
+	dx = (phase_signals * np.cos(ORIENT_ANGLES)).sum(axis=(1, 2))
+	dy = (phase_signals * np.sin(ORIENT_ANGLES)).sum(axis=(1, 2))
+	u = vibration_direction(dx, dy, fps)
+	sound_raw = u[0] * dx + u[1] * dy
 
-	sound_raw = np.zeros(frame_count)
-	for i in range(nlevels):
-		for j in range(n_orient):
-			sound_raw += np.roll(phase_signals[:, i, j], int(shift_matrix[i, j]))
+	if denoise:
+		sound_raw = denoise_spectral(sound_raw, fps)
 
 	p_min = np.min(sound_raw)
 	p_max = np.max(sound_raw)
@@ -99,7 +141,7 @@ def postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref
 	return sound_data
 
 
-def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None, biort='near_sym_b', qshift='qshift_b'):
+def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low=None, freq_high=None, roi=None, biort='near_sym_b', qshift='qshift_b', denoise=False):
 	import dtcwt
 	transform = dtcwt.Transform2d(biort=biort, qshift=qshift)
 	ref_conj = None
@@ -151,7 +193,7 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, re
 	elapsed = time.time() - start_time
 	print(f"Transform complete: {frame_count} frames in {format_duration(elapsed)}")
 
-	return postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref_level, ref_orient, fps, freq_low, freq_high)
+	return postprocess_phase_signals(phase_signals, fps, freq_low, freq_high, denoise)
 
 
 def estimate_vram(batch_size, height, width, nlevels):
@@ -167,7 +209,7 @@ def estimate_vram(batch_size, height, width, nlevels):
 	return batch_vram + pytorch_overhead
 
 
-def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low=None, freq_high=None, roi=None, batch_size=16, biort='near_sym_b', qshift='qshift_b'):
+def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low=None, freq_high=None, roi=None, batch_size=16, biort='near_sym_b', qshift='qshift_b', denoise=False):
 	import torch
 	from pytorch_wavelets import DTCWTForward
 
@@ -271,7 +313,7 @@ def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient
 	elapsed = time.time() - start_time
 	print(f"Transform complete: {frame_count} frames in {format_duration(elapsed)}")
 
-	return postprocess_phase_signals(phase_signals, frame_count, nlevels, n_orient, ref_level, ref_orient, fps, freq_low, freq_high)
+	return postprocess_phase_signals(phase_signals, fps, freq_low, freq_high, denoise)
 
 
 def main():
@@ -283,7 +325,9 @@ def main():
 	)
 	parser.add_argument('-i', '--input', required=True, help='Input video path')
 	parser.add_argument('-o', '--output', default='sound.wav', help='Output audio path (default: sound.wav)')
-	parser.add_argument('-fl', '--freq-low', type=float, default=None, help='Lower cutoff frequency in Hz for temporal bandpass filter')
+	parser.add_argument('-fl', '--freq-low', type=float, default=None, help='Lower cutoff frequency in Hz for temporal bandpass filter (default: fps/40, clamped to 20-100 Hz)')
+	parser.add_argument('--no-filter', action='store_true', help='Disable the default high-pass filter (raw phase signals)')
+	parser.add_argument('--denoise', action='store_true', help='Spectral subtraction of stationary noise (hum, light flicker, sensor noise)')
 	parser.add_argument('-fh', '--freq-high', type=float, default=None, help='Upper cutoff frequency in Hz for temporal bandpass filter')
 	parser.add_argument('--fps', type=float, default=None, help='Override video frame rate (Hz) for audio output sample rate')
 	parser.add_argument('--roi', type=str, default=None, help='Region of interest as x,y,w,h (e.g. --roi 100,50,200,150)')
@@ -392,8 +436,11 @@ def main():
 
 	n_orient = 6
 	ref_index = 0
-	ref_level = 0
-	ref_orient = 0
+
+	if freq_low is None and not args.no_filter:
+		default_low = default_freq_low(fps)
+		if freq_high is None or default_low < freq_high:
+			freq_low = default_low
 
 	if args.gpu:
 		import torch
@@ -416,9 +463,9 @@ def main():
 				f"  - Remove --gpu to use CPU mode",
 				file=sys.stderr
 			)
-		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi, args.batch_size, args.biort, args.qshift)
+		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low, freq_high, roi, args.batch_size, args.biort, args.qshift, args.denoise)
 	else:
-		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, ref_index, ref_orient, ref_level, fps, freq_low, freq_high, roi, args.biort, args.qshift)
+		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low, freq_high, roi, args.biort, args.qshift, args.denoise)
 
 	save_wav(sound_data, output_name, int(fps))
 	print(f"Total time: {format_duration(time.time() - pipeline_start)}")
