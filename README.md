@@ -124,8 +124,10 @@ python visualmic.py -i testvid.avi --biort near_sym_a --qshift qshift_a
 |---|---|---|
 | `-i / --input` | *(required)* | Input video path |
 | `-o / --output` | `sound.wav` | Output audio path |
-| `-fl / --freq-low` | — | Lower cutoff frequency (Hz) for temporal bandpass filter |
+| `-fl / --freq-low` | fps/40, clamped to 20–100 Hz | Lower cutoff frequency (Hz) for temporal bandpass filter |
 | `-fh / --freq-high` | — | Upper cutoff frequency (Hz) for temporal bandpass filter |
+| `--no-filter` | off | Disable the default high-pass (raw phase signals) |
+| `--denoise` | off | Spectral subtraction of stationary noise (hum, light flicker, sensor noise) |
 | `--fps` | — | Override video frame rate (Hz) for audio sample rate |
 | `--roi` | — | Region of interest as `x,y,w,h` |
 | `--gpu` | off | Use GPU-accelerated DTCWT (requires CUDA + pytorch_wavelets) |
@@ -139,7 +141,9 @@ python visualmic.py -i testvid.avi --biort near_sym_a --qshift qshift_a
 - `--biort`: `antonini`, `legall`, `near_sym_a`, `near_sym_b`
 - `--qshift`: `qshift_06`, `qshift_a`, `qshift_b`, `qshift_c`, `qshift_d`
 
-When `-fl` and/or `-fh` are specified, a Butterworth filter is applied to the phase signals before audio reconstruction, rejecting low-frequency drift and high-frequency noise.
+A Butterworth high-pass is applied to the phase signals by default, at 1/20 of Nyquist (fps/40) clamped to 20–100 Hz, as in Davis et al. (55 Hz at 2200 fps). It rejects slow drift, which would otherwise swamp the audio. `-fl` and `-fh` set the band explicitly; `--no-filter` turns it off.
+
+When `--denoise` is specified, stationary noise is removed by spectral subtraction. The noise level of each frequency is estimated as its median over the whole clip, so steady hum and light flicker (multiples of 50/60 Hz) are suppressed while the recovered sound, which comes and goes, is kept.
 
 When `--fps` is specified, the given value is used as the audio sample rate instead of the frame rate reported by the video container. This is necessary for high-speed camera footage where the container frame rate does not reflect the actual capture rate.
 
@@ -147,7 +151,8 @@ When `--roi` is specified, each frame is cropped to the given rectangle before t
 
 ### Tips
 
-- Start with default settings and adjust from there.
+- Always pass the true capture rate with `--fps`; the high-pass cutoff and output sample rate depend on it.
+- Add `--denoise` for listening; leave it off when you need the raw motion signal.
 - Use `--roi` to focus on the vibrating object — improves SNR and reduces computation.
 - For MIT CSAIL videos, always use `--fps 2200` (the container reports ~30 fps incorrectly).
 - Use `--gpu` for large videos — the DTCWT forward pass is the main bottleneck.
@@ -514,17 +519,12 @@ The conjugate multiplication `coeffs * conj(ref)` computes the phase difference 
 
 **Result:** `phase_signals[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$ — one scalar per frame per sub-band.
 
-### Step 3.5: Temporal Bandpass Filtering (optional)
+### Step 3.5: Temporal Bandpass Filtering
 
-When `-fl` and/or `-fh` are specified, a 4th-order Butterworth filter is applied to each of the 18 phase signals before cross-correlation:
+A 4th-order Butterworth filter is applied to all 18 phase signals at once. By default it is a high-pass at `default_freq_low(fps)` (fps/40, clamped to 20–100 Hz); `-fl`/`-fh` override it and `--no-filter` disables it:
 
 ```python
-nyquist = fps / 2.0
-sos = signal.butter(4, [freq_low / nyquist, freq_high_clamped / nyquist],
-                    btype='bandpass', output='sos')
-for i in range(nlevels):
-    for j in range(n_orient):
-        phase_signals[:, i, j] = signal.sosfiltfilt(sos, phase_signals[:, i, j])
+phase_signals = signal.sosfiltfilt(sos, phase_signals, axis=0)
 ```
 
 - `sosfiltfilt` applies the filter forward and backward (zero-phase), so no time delay is introduced
@@ -533,30 +533,27 @@ for i in range(nlevels):
 - Skipped if video has fewer than 13 frames (minimum required for `filtfilt`)
 - If only `-fl` is given, acts as highpass; if only `-fh`, acts as lowpass
 
-### Step 4: Temporal Alignment via Cross-Correlation
+### Step 4: Combine Sub-bands Along the Vibration Direction
+
+Each orientation band measures the image motion projected onto its own direction. The six DTCWT orientations point at 15°, 45° and 75°, and at 105°–165°, which respond like −75° to −15°: half of them see vertical motion inverted. The bands are combined into horizontal and vertical motion, and the audio is the motion along the dominant vibration direction:
 
 ```python
-ref_vector = phase_signals[:, ref_level, ref_orient].reshape(-1)
-for i in range(nlevels):
-    for j in range(n_orient):
-        shift_matrix[i, j] = find_best_shift(ref_vector, phase_signals[:, i, j].reshape(-1))
+ORIENT_ANGLES = np.deg2rad([15, 45, 75, -75, -45, -15])
+dx = (phase_signals * np.cos(ORIENT_ANGLES)).sum(axis=(1, 2))
+dy = (phase_signals * np.sin(ORIENT_ANGLES)).sum(axis=(1, 2))
+u = vibration_direction(dx, dy, fps)   # principal axis after removing stationary noise
+sound_raw = u[0] * dx + u[1] * dy
 ```
 
-The `find_best_shift` function uses `scipy.signal.correlate` for $O(n \log n)$ cross-correlation:
+**Why not align sub-bands like the original?** Davis et al. shift each band in time to best match a reference band (Step 5 of the original). On the MIT Chips2 video that picked arbitrary lags, up to the full clip length, and cost 7 dB of SNR: a deforming bag's sub-bands aren't time-shifted copies of each other. Plain summing works on the bag but cancels rigid vertical motion. Projecting the 2D motion handles both. The direction is estimated after spectral subtraction, so hum and light flicker don't decide it.
+
+### Step 5: Optional Denoising (`--denoise`)
+
+Spectral subtraction (Boll 1979), as in the original's Section 3.3, with the noise of each frequency estimated as its median power over the whole clip:
 
 ```python
-def find_best_shift(a, b):
-    correlation = signal.correlate(a, b, mode='full')
-    return np.argmax(correlation) - (len(b) - 1)
-```
-
-### Step 5: Sum Across Sub-bands with Temporal Shifts
-
-```python
-sound_raw = np.zeros(frame_count)
-for i in range(nlevels):
-    for j in range(n_orient):
-        sound_raw += np.roll(phase_signals[:, i, j], int(shift_matrix[i, j]))
+noise = np.median(power, axis=1, keepdims=True)
+gain = np.sqrt(np.maximum(1 - alpha * noise / power, beta ** 2))   # alpha=2, beta=0.05
 ```
 
 ### Step 6: Normalize to $[-1, 1]$
@@ -644,11 +641,30 @@ The vibration signal is present across all scales (the whole surface moves), but
 
 - **Multiprocessing across frames**: Frame processing is independent after the reference frame is computed. Reading frames remains sequential (VideoCapture limitation), but the DTCWT + phase extraction can be parallelized across CPU cores using batch processing with `multiprocessing.Pool`, giving ~Nx speedup on an N-core machine.
 
-- **Better post-processing / signal recovery**: The current algorithm uses properly wrapped phase differences (`np.angle(coeffs * conj(ref))`, bounded to [-π, π]), which is mathematically correct but produces lower-amplitude signals for very small vibrations. Exploring better post-processing — such as phase unwrapping, adaptive Wiener filtering, or learned denoising — could recover signal strength without reintroducing the phase wrapping artifacts.
+- **Phase wrapping under drift**: phase is measured against the first frame, so it wraps once the surface drifts by about half a wavelength of a band ([#17](https://github.com/joeljose/Visual-Mic/issues/17)). Frame-to-frame differences plus a cumulative sum would avoid it.
+
+- **Closing the gap to the original**: on Chips2, coherence with the played sound is 0.49 against 0.60 for MIT's result. Candidates: more scales, a different motion estimate, or equalising the object's frequency response (original Section 4.3).
 
 ---
 
 ## Development
+
+### Evaluating Recovered Audio
+
+The MIT dataset includes the sound that was played for each video (`*-input.wav`) and MIT's own result (`*-recovered.wav`). `scripts/eval_audio.py` aligns a recovered WAV to the played sound (lag and sign) and reports SNR, segmental SNR and 100–1000 Hz coherence. Coherence ignores the object's frequency response, so it is the fairest single number.
+
+```bash
+python scripts/eval_audio.py sound.wav --ref Chips2-2200Hz-Mary_MIDI-input.wav
+```
+
+Chips2 (2200 fps, GPU):
+
+| Output | SNR (dB) | segSNR (dB) | Coherence |
+|---|---|---|---|
+| v2.0.0, default | −11.1 | −9.2 | 0.49 |
+| current, default | −3.8 | −3.2 | 0.49 |
+| current, `--denoise` | −2.9 | −1.3 | 0.49 |
+| MIT `recovered.wav` (denoised) | −4.0 | −1.1 | 0.60 |
 
 ### Running Tests
 
@@ -667,8 +683,8 @@ All tests run inside Docker — no local Python dependencies needed:
 ```
 
 **CPU tests** (`tests/test_visualmic.py`) cover:
-- Utility functions (`format_duration`, `find_best_shift`, `save_wav`)
-- Phase signal postprocessing (cross-correlation, normalization, Butterworth filter)
+- Utility functions (`format_duration`, `save_wav`, `default_freq_low`, `denoise_spectral`)
+- Phase signal postprocessing (normalization, Butterworth filter)
 - VRAM estimation arithmetic
 - Full `extract_audio` pipeline on synthetic 256x256 video (shape, finiteness)
 - All CLI validation error paths

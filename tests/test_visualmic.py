@@ -7,6 +7,7 @@ import sys
 import cv2
 import numpy as np
 import pytest
+from scipy import signal
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import visualmic
@@ -33,33 +34,6 @@ class TestFormatDuration:
 
     def test_fractional_truncates(self):
         assert visualmic.format_duration(59.9) == "59s"
-
-
-class TestFindBestShift:
-    def test_known_shift(self):
-        # b is shifted right by 10 relative to a → find_best_shift returns -10
-        # (the shift needed to align b back to a)
-        a = np.zeros(200)
-        a[50:60] = 1.0
-        b = np.zeros(200)
-        b[60:70] = 1.0
-        result = visualmic.find_best_shift(a, b)
-        assert result == -10
-
-    def test_zero_shift(self):
-        a = np.zeros(100)
-        a[30:40] = 1.0
-        result = visualmic.find_best_shift(a, a)
-        assert result == 0
-
-    def test_negative_shift(self):
-        # b is shifted left by 5 relative to a → find_best_shift returns 5
-        a = np.zeros(200)
-        a[60:70] = 1.0
-        b = np.zeros(200)
-        b[55:65] = 1.0
-        result = visualmic.find_best_shift(a, b)
-        assert result == 5
 
 
 class TestSaveWav:
@@ -97,10 +71,9 @@ class TestPostprocessPhaseSignals:
         nlevels, n_orient, frame_count = 3, 6, 50
         phase_signals = np.ones((frame_count, nlevels, n_orient))
         result = visualmic.postprocess_phase_signals(
-            phase_signals, frame_count, nlevels, n_orient,
-            ref_level=0, ref_orient=0, fps=100
+            phase_signals, fps=100
         )
-        # Constant input → all sub-bands identical → after shift+sum, still constant
+        # Constant input → constant sum
         # Normalization maps constant to zero
         assert result.shape == (frame_count,)
         assert np.all(np.isfinite(result))
@@ -111,8 +84,7 @@ class TestPostprocessPhaseSignals:
         rng = np.random.RandomState(42)
         phase_signals = rng.randn(frame_count, nlevels, n_orient)
         result = visualmic.postprocess_phase_signals(
-            phase_signals, frame_count, nlevels, n_orient,
-            ref_level=0, ref_orient=0, fps=100
+            phase_signals, fps=100
         )
         assert np.min(result) >= -1.0 - 1e-10
         assert np.max(result) <= 1.0 + 1e-10
@@ -122,8 +94,7 @@ class TestPostprocessPhaseSignals:
         rng = np.random.RandomState(42)
         phase_signals = rng.randn(frame_count, nlevels, n_orient)
         result = visualmic.postprocess_phase_signals(
-            phase_signals, frame_count, nlevels, n_orient,
-            ref_level=0, ref_orient=0, fps=100
+            phase_signals, fps=100
         )
         assert result.shape == (frame_count,)
 
@@ -131,14 +102,13 @@ class TestPostprocessPhaseSignals:
 class TestButterworthFilter:
     def test_passband_preserved(self):
         """Signal within passband should be preserved."""
-        nlevels, n_orient, frame_count = 1, 1, 200
+        frame_count = 200
         fps = 1000
         # 100 Hz signal, passband 50-200 Hz
         t = np.arange(frame_count) / fps
-        phase_signals = np.sin(2 * np.pi * 100 * t).reshape(-1, 1, 1)
+        phase_signals = np.tile(np.sin(2 * np.pi * 100 * t)[:, None, None], (1, 1, 6))
         result = visualmic.postprocess_phase_signals(
-            phase_signals.copy(), frame_count, nlevels, n_orient,
-            ref_level=0, ref_orient=0, fps=fps, freq_low=50, freq_high=200
+            phase_signals.copy(), fps=fps, freq_low=50, freq_high=200
         )
         assert np.all(np.isfinite(result))
         # Should have non-zero energy (signal passed through)
@@ -146,22 +116,48 @@ class TestButterworthFilter:
 
     def test_stopband_attenuated(self):
         """Signal outside passband should be attenuated."""
-        nlevels, n_orient, frame_count = 1, 1, 200
+        frame_count = 200
         fps = 1000
         # 400 Hz signal, passband 50-200 Hz
         t = np.arange(frame_count) / fps
-        phase_signals = np.sin(2 * np.pi * 400 * t).reshape(-1, 1, 1)
+        phase_signals = np.tile(np.sin(2 * np.pi * 400 * t)[:, None, None], (1, 1, 6))
         result = visualmic.postprocess_phase_signals(
-            phase_signals.copy(), frame_count, nlevels, n_orient,
-            ref_level=0, ref_orient=0, fps=fps, freq_low=50, freq_high=200
+            phase_signals.copy(), fps=fps, freq_low=50, freq_high=200
         )
         assert np.all(np.isfinite(result))
         # Should have lower energy than unfiltered version
         unfiltered = visualmic.postprocess_phase_signals(
-            phase_signals.copy(), frame_count, nlevels, n_orient,
-            ref_level=0, ref_orient=0, fps=fps
+            phase_signals.copy(), fps=fps
         )
         assert np.std(result) < np.std(unfiltered)
+
+
+class TestDefaultFreqLow:
+    def test_paper_rule(self):
+        # 1/20 of Nyquist at 2200 fps
+        assert visualmic.default_freq_low(2200) == 55
+
+    def test_clamped(self):
+        assert visualmic.default_freq_low(400) == 20
+        assert visualmic.default_freq_low(20000) == 100
+
+
+class TestDenoiseSpectral:
+    def test_removes_stationary_keeps_intermittent(self):
+        """A steady hum is suppressed; a tone that comes and goes survives."""
+        fs = 2200
+        t = np.arange(fs * 4) / fs
+        hum = np.sin(2 * np.pi * 120 * t)
+        tone = np.sin(2 * np.pi * 330 * t) * (np.sin(2 * np.pi * 0.5 * t) > 0)
+        out = visualmic.denoise_spectral(hum + tone, fs)
+
+        def power_at(x, f):
+            freqs, p = signal.welch(x, fs=fs, nperseg=512)
+            return p[np.argmin(np.abs(freqs - f))]
+
+        assert out.shape == t.shape
+        assert power_at(out, 120) < 0.01 * power_at(hum, 120)
+        assert power_at(out, 330) > 0.5 * power_at(tone, 330)
 
 
 class TestEstimateVram:
@@ -213,7 +209,7 @@ class TestExtractAudio:
         cap = cv2.VideoCapture(video_path)
         result = visualmic.extract_audio(
             cap, 32, nlevels=3, n_orient=6,
-            ref_index=0, ref_orient=0, ref_level=0,
+            ref_index=0,
             fps=30
         )
         assert result.shape == (32,)
@@ -229,7 +225,7 @@ class TestExtractAudio:
         cap = cv2.VideoCapture(video_path)
         result = visualmic.extract_audio(
             cap, 16, nlevels=2, n_orient=6,
-            ref_index=0, ref_orient=0, ref_level=0,
+            ref_index=0,
             fps=30, biort='near_sym_a', qshift='qshift_a'
         )
         assert result.shape == (16,)
