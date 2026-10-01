@@ -9,7 +9,7 @@ Based on: Davis et al., "The Visual Microphone: Passive Recovery of Sound
 from Video", ACM Transactions on Graphics (SIGGRAPH 2014).
 """
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 import argparse
 import os
