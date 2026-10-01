@@ -282,4 +282,7 @@ class TestInputValidation:
             capture_output=True, text=True
         )
         assert result.returncode == 0
-        assert '2.0.0' in result.stdout
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'VERSION')) as f:
+            version = f.read().strip()
+        assert visualmic.__version__ == version
+        assert version in result.stdout

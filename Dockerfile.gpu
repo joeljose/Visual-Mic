@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements-gpu.txt -r requirements-dev.txt &
     pip install --no-cache-dir --no-deps \
         "https://github.com/fbcotter/pytorch_wavelets/archive/${PYTORCH_WAVELETS_SHA}.tar.gz"
 
-COPY --chown=app:app visualmic.py .
+COPY --chown=app:app visualmic.py VERSION ./
 COPY --chown=app:app tests/ tests/
 COPY --chown=app:app scripts/ scripts/
 
