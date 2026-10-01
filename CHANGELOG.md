@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-10-02
+
 ### Fixed
-- Frames are read until the video ends instead of up to the container's frame count, and the GPU path processes its last partial batch. Before, a wrong count could drop up to `batch_size - 1` frames on the GPU, or every frame past the count on both paths ([#16](https://github.com/joeljose/Visual-Mic/issues/16)).
-- Filter settings are checked before processing: a cutoff of zero or less, or `-fl` at or above the Nyquist frequency, is an error instead of a crash or a silent skip at the end. Clips shorter than 28 frames are filtered with a shorter edge pad instead of crashing. A frame rate below 500 fps prints a warning that `--fps` is probably needed. The WAV sample rate is rounded, not truncated ([#15](https://github.com/joeljose/Visual-Mic/issues/15)).
+- Frames are read until the video ends instead of up to the container's frame count, and the GPU path processes its last partial batch. Before, a wrong count could drop up to `batch_size - 1` frames on the GPU, or every frame past the count on both paths ([#16](https://github.com/joeljose/Visual-Mic/issues/16), [#29](https://github.com/joeljose/Visual-Mic/pull/29)).
+- Filter settings are checked before processing: a cutoff of zero or less, or `-fl` at or above the Nyquist frequency, is an error instead of a crash or a silent skip at the end. Clips shorter than 28 frames are filtered with a shorter edge pad instead of crashing. A frame rate below 500 fps prints a warning that `--fps` is probably needed. The WAV sample rate is rounded, not truncated ([#15](https://github.com/joeljose/Visual-Mic/issues/15), [#29](https://github.com/joeljose/Visual-Mic/pull/29)).
 
 ## [3.0.0] - 2026-10-02
 
