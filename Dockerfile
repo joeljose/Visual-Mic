@@ -1,29 +1,19 @@
 FROM python:3.11-slim
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 && \
-    rm -rf /var/lib/apt/lists/*
-
-ARG UID
-ARG GID
-ARG UNAME
-
-RUN groupadd -g ${GID} ${UNAME} && \
-    useradd -m -u ${UID} -g ${GID} ${UNAME}
+# Fixed non-root user; for bind mounts run with --user "$(id -u):$(id -g)"
+RUN useradd -m -u 1000 app && install -d -o app -g app /app
 
 WORKDIR /app
 
 COPY requirements.txt requirements-dev.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
 
-COPY visualmic.py .
-COPY tests/ tests/
-
-RUN chown -R ${UID}:${GID} /app
+COPY --chown=app:app visualmic.py .
+COPY --chown=app:app tests/ tests/
 
 ARG VERSION
 LABEL version=${VERSION}
 
-USER ${UNAME}
+USER app
 
 ENTRYPOINT ["python", "-u", "visualmic.py"]

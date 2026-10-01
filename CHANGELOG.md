@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- CPU install pulled NumPy 2, which breaks `dtcwt` (`np.asfarray` removed); NumPy is now `<2`
+- CI broke on ruff 0.16; dev tools are now pinned (`ruff==0.15.7`, `pytest==8.4.2`)
+
+### Changed
+- CPU image uses `opencv-python-headless` and no apt packages (1.09 GB to 757 MB)
+- GPU image is built on `python:3.11-slim` with the torch 2.1.2 CUDA wheels instead of `pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime` (about 2 GB smaller unpacked)
+- `pytorch_wavelets` is pinned to a commit
+- Images use a fixed non-root user (uid 1000) instead of `UID`/`GID`/`UNAME` build args; run with `--user "$(id -u):$(id -g)"` for bind mounts
+- CI runs pytest; the GPU image is built only when its inputs change
+
 ## [2.0.0] - 2026-03-21
 
 ### Removed

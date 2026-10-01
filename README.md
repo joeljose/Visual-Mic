@@ -70,7 +70,7 @@ python visualmic.py -i testvid.avi -o recovered_audio.wav
 ./docker-build.sh
 
 # Run
-docker run --rm -v /path/to/videos:/data \
+docker run --rm --user "$(id -u):$(id -g)" -v /path/to/videos:/data \
     visual-mic:latest \
     -i /data/testvid.avi -o /data/sound.wav
 ```
@@ -84,7 +84,7 @@ Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-nat
 ./docker-build-gpu.sh
 
 # Run
-docker run --rm --gpus all -v /path/to/videos:/data \
+docker run --rm --gpus all --user "$(id -u):$(id -g)" -v /path/to/videos:/data \
     visual-mic-gpu:latest \
     --gpu -i /data/Chips1-2200Hz-Mary_Had-input.avi \
     -o /data/sound.wav --fps 2200 --batch-size 32
@@ -696,7 +696,7 @@ Version is tracked in a `VERSION` file at the project root. `visualmic.py` has `
 ```
 visualmic.py               # CLI tool (CPU + GPU paths)
 Dockerfile                 # CPU Docker image (python:3.11-slim)
-Dockerfile.gpu             # GPU Docker image (pytorch:2.1.2-cuda12.1)
+Dockerfile.gpu             # GPU Docker image (python:3.11-slim + torch 2.1.2 CUDA wheels)
 docker-build.sh            # Build + tag CPU image
 docker-build-gpu.sh        # Build + tag GPU image
 test.sh                    # Run lint + tests (Docker, supports cpu/gpu mode)

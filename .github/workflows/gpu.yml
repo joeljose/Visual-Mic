@@ -1,0 +1,28 @@
+name: GPU image
+
+# The GPU image is several GB, so only build it when its inputs change.
+on:
+  push:
+    branches: [main]
+    paths: [Dockerfile.gpu, requirements-gpu.txt, requirements-dev.txt, .github/workflows/gpu.yml]
+  pull_request:
+    branches: [main]
+    paths: [Dockerfile.gpu, requirements-gpu.txt, requirements-dev.txt, .github/workflows/gpu.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build GPU Docker image
+        run: docker build -f Dockerfile.gpu -t visualmic-gpu-ci .
+
+      - name: Verify imports
+        run: docker run --rm --entrypoint "" visualmic-gpu-ci python -c "import torch, pytorch_wavelets, visualmic"
+
+      - name: Verify --help
+        run: docker run --rm visualmic-gpu-ci --help
