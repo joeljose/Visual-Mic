@@ -126,6 +126,8 @@ def test_large_drift_does_not_wrap():
     assert snr_db(recover(0.01, drift_px=3.0)) >= 10
 
 
-@pytest.mark.xfail(strict=True, reason="#16: frames beyond the reported count are dropped")
-def test_under_reported_frame_count_keeps_all_frames():
-    assert len(recover(0.01, reported=N // 2)) == N
+# Containers often report the wrong frame count (#16). Every decodable frame
+# should be used, whatever the metadata says.
+@pytest.mark.parametrize("reported", [N // 2, N + 300], ids=["under-reported", "over-reported"])
+def test_output_length_follows_decoded_frames(reported):
+    assert len(recover(0.01, reported=reported)) == N
