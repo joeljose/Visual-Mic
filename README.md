@@ -145,7 +145,9 @@ A Butterworth high-pass is applied to the phase signals by default, at 1/20 of t
 
 When `--denoise` is specified, stationary noise is removed by spectral subtraction. The noise level of each frequency is estimated as its median over the whole clip, so steady hum and light flicker (multiples of 50/60 Hz) are suppressed while the recovered sound, which comes and goes, is kept.
 
-When `--fps` is specified, the given value is used as the audio sample rate instead of the frame rate reported by the video container. This is necessary for high-speed camera footage where the container frame rate does not reflect the actual capture rate.
+When `--fps` is specified, the given value is used as the audio sample rate instead of the frame rate reported by the video container. High-speed footage often needs it, because the container frame rate can be wrong. Below 500 fps the tool prints a warning, since that is usually the sign of a wrong rate.
+
+The filter settings are checked against the frame rate before any frame is processed. A cutoff of zero or less, or a `-fl` at or above the Nyquist frequency, stops the run with an error. Frames are read until the video ends, so a wrong frame count in the file doesn't drop or invent audio.
 
 When `--roi` is specified, each frame is cropped to the given rectangle before the DTCWT decomposition. This reduces computation and can improve SNR by focusing on the vibrating object.
 
@@ -168,7 +170,7 @@ The `--gpu` flag enables GPU-accelerated processing via [PyTorch](https://pytorc
 
 The GPU path processes frames in configurable batches rather than one at a time:
 
-1. **Batch accumulation**: Grayscale frames are collected into batches of `--batch-size` frames (default: 16)
+1. **Batch accumulation**: Grayscale frames are collected into batches of `--batch-size` frames (default: 16). The last batch can be smaller, and it is processed too
 2. **GPU transfer**: The batch is stacked into a `(B, 1, H, W)` float32 tensor and sent to GPU
 3. **Batched forward DTCWT**: `pytorch_wavelets.DTCWTForward` processes all frames in the batch simultaneously, producing `Yh[level]` with shape `(B, 1, 6, H_l, W_l, 2)` where the last dimension is real/imaginary
 4. **Phase extraction**: Performed on-GPU for the entire batch (see below)
@@ -526,7 +528,7 @@ phase_signals = signal.sosfiltfilt(sos, phase_signals, axis=0)
 - `sosfiltfilt` applies the filter forward and backward (zero-phase), so no time delay is introduced
 - The filter rejects low-frequency drift (camera shake, thermal effects) and high-frequency noise
 - Upper cutoff is automatically clamped to 99% of Nyquist to avoid instability
-- Skipped if video has fewer than 13 frames (minimum required for `filtfilt`)
+- Clips too short for `sosfiltfilt`'s usual edge padding (under 28 frames for a band-pass) get a shorter pad
 - If only `-fl` is given, acts as highpass; if only `-fh`, acts as lowpass
 
 ### Step 4: Combine Sub-bands Along the Vibration Direction
@@ -571,7 +573,7 @@ def save_wav(samples, output_name, sample_rate):
     write(output_name, sample_rate, waveform_integers)
 ```
 
-The sample rate is the frame rate (from the video, or from `--fps`), truncated to a whole number. One frame becomes one audio sample.
+The sample rate is the frame rate (from the video, or from `--fps`), rounded to a whole number. One frame becomes one audio sample.
 
 ## 2.4 Parameters Used
 
@@ -685,7 +687,7 @@ All tests run inside Docker, so you need no local Python dependencies:
 - Full `extract_audio` pipeline on synthetic 256x256 video (shape, finiteness)
 - All CLI validation error paths
 
-**Recovery tests** (`tests/test_recovery.py`) move a texture by a known sub-pixel amount, following a 100 to 1000 Hz chirp, and check that the recovered signal matches it. They cover horizontal, vertical and diagonal motion at the motion sizes the paper measured (0.005 to 0.01 px), drift, and the paper's rule that SNR rises 6 dB when the motion doubles. Known open bugs (#16, #17) are marked as expected failures.
+**Recovery tests** (`tests/test_recovery.py`) move a texture by a known sub-pixel amount, following a 100 to 1000 Hz chirp, and check that the recovered signal matches it. They cover horizontal, vertical and diagonal motion at the motion sizes the paper measured (0.005 to 0.01 px), drift, wrong frame counts in the file, and the paper's rule that SNR rises 6 dB when the motion doubles. The open phase-wrapping bug (#17) is marked as an expected failure.
 
 `tests/test_eval_audio.py` checks that `scripts/eval_audio.py` finds a known delay, sign and SNR.
 

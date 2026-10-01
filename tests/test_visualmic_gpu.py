@@ -86,6 +86,20 @@ class TestExtractAudioGpu:
         assert np.min(result) >= -1.0 - 1e-10
         assert np.max(result) <= 1.0 + 1e-10
 
+    @pytest.mark.parametrize("reported", [20, 50], ids=["under-reported", "over-reported"])
+    def test_output_length_follows_decoded_frames(self, tmp_path, reported):
+        """#16: the last partial batch is processed and no frame is dropped."""
+        video_path = str(tmp_path / "test.avi")
+        _create_synthetic_video(video_path, num_frames=40, height=64, width=64)
+
+        cap = cv2.VideoCapture(video_path)
+        result = visualmic.extract_audio_gpu(
+            cap, reported, nlevels=3, n_orient=6,
+            ref_index=0,
+            fps=2200, batch_size=16
+        )
+        assert result.shape == (40,)
+
     def test_with_custom_filters(self, tmp_path):
         """Verify GPU path works with custom filter selection."""
         video_path = str(tmp_path / "test.avi")

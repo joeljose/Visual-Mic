@@ -12,6 +12,7 @@ from Video", ACM Transactions on Graphics (SIGGRAPH 2014).
 __version__ = "3.0.0"
 
 import argparse
+import itertools
 import os
 import sys
 import time
@@ -39,6 +40,21 @@ def format_duration(seconds):
 # deg bands respond to motion like -75..-15 deg: their phase rises with
 # rightward motion, so their vertical response is inverted.
 ORIENT_ANGLES = np.deg2rad([15, 45, 75, -75, -45, -15])
+
+
+def print_progress(done, expected, start_time):
+	"""Print frames done, percent and ETA. expected is the container's frame
+	count, which can be wrong, so it never drops below done."""
+	expected = max(expected, done)
+	elapsed = time.time() - start_time
+	rate = done / elapsed if elapsed > 0 else 0
+	remaining = (expected - done) / rate if rate > 0 else 0
+	print(f"Processing: {done}/{expected} frames ({100 * done // expected}%) | Elapsed: {format_duration(elapsed)} | ETA: {format_duration(remaining)}")
+
+
+def warn_if_count_differs(reported, decoded):
+	if decoded != reported:
+		print(f"Warning: the video reports {reported} frames, but {decoded} could be decoded. Using all {decoded}.")
 
 
 def default_freq_low(fps):
@@ -91,7 +107,7 @@ def postprocess_phase_signals(phase_signals, fps, freq_low=None, freq_high=None,
 
 	# Temporal bandpass filtering
 	nyquist = fps / 2.0
-	apply_filter = (freq_low is not None or freq_high is not None) and frame_count > 12
+	apply_filter = (freq_low is not None or freq_high is not None) and frame_count > 1
 
 	if apply_filter:
 		if freq_low is not None and freq_high is not None:
@@ -101,7 +117,7 @@ def postprocess_phase_signals(phase_signals, fps, freq_low=None, freq_high=None,
 			else:
 				freq_high_clamped = min(freq_high, nyquist * 0.99)
 				sos = signal.butter(4, [freq_low / nyquist, freq_high_clamped / nyquist], btype='bandpass', output='sos')
-				print(f"Applying bandpass filter: {freq_low}\u2013{freq_high_clamped:.0f} Hz")
+				print(f"Applying bandpass filter: {freq_low} to {freq_high_clamped:.0f} Hz")
 		elif freq_low is not None:
 			if freq_low >= nyquist:
 				print(f"Warning: freq_low ({freq_low} Hz) >= Nyquist ({nyquist} Hz), skipping filter")
@@ -115,7 +131,11 @@ def postprocess_phase_signals(phase_signals, fps, freq_low=None, freq_high=None,
 			print(f"Applying lowpass filter: {freq_high_clamped:.0f} Hz")
 
 	if apply_filter:
-		phase_signals = signal.sosfiltfilt(sos, phase_signals, axis=0)
+		# sosfiltfilt pads both ends by 3 * ntaps samples (scipy's default).
+		# Shorter clips get a shorter pad instead of a ValueError.
+		ntaps = 2 * len(sos) + 1 - min((sos[:, 2] == 0).sum(), (sos[:, 5] == 0).sum())
+		padlen = min(3 * ntaps, frame_count - 1)
+		phase_signals = signal.sosfiltfilt(sos, phase_signals, axis=0, padlen=padlen)
 
 	# Each orientation band measures the motion projected onto its direction.
 	# Combine them into x/y motion and take the dominant vibration direction.
@@ -149,10 +169,10 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low=
 	progress_interval = max(1, frame_count // 10)
 	start_time = time.time()
 
-	for fc in range(frame_count):
+	# Read until the video ends: the container's frame count can be wrong
+	for fc in itertools.count():
 		ret, raw_frame = cap.read()
 		if not ret or raw_frame is None:
-			print(f"Warning: could not read frame {fc}, stopping at {len(phase_signals)} frames")
 			break
 		gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
 		if roi is not None:
@@ -176,13 +196,11 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low=
 			frame_phases[level, :] = np.sum(amp * amp * phase_diff, axis=(0, 1))
 		phase_signals.append(frame_phases)
 
-		if (fc + 1) % progress_interval == 0 or fc == frame_count - 1:
-			elapsed = time.time() - start_time
-			rate = (fc + 1) / elapsed if elapsed > 0 else 0
-			remaining = (frame_count - fc - 1) / rate if rate > 0 else 0
-			print(f"Processing: {fc + 1}/{frame_count} frames ({100 * (fc + 1) // frame_count}%) | Elapsed: {format_duration(elapsed)} | ETA: {format_duration(remaining)}")
+		if (fc + 1) % progress_interval == 0:
+			print_progress(fc + 1, frame_count, start_time)
 
 	cap.release()
+	warn_if_count_differs(frame_count, len(phase_signals))
 
 	if len(phase_signals) == 0:
 		print("Error: no frames could be read from video")
@@ -220,89 +238,89 @@ def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_
 	ref_coeffs = None
 	phase_signals = []
 	progress_interval = max(1, frame_count // 10)
-	frames_read = 0
 	last_report = 0
 	start_time = time.time()
 
+	def process_batch(frames):
+		nonlocal ref_coeffs
+		first_fc = len(phase_signals)
+		n_in_batch = len(frames)
+		batch_np = np.stack(frames)[:, np.newaxis, :, :]
+		try:
+			batch_tensor = torch.from_numpy(batch_np).to(device)
+			Yl, Yh = xfm(batch_tensor)
+		except RuntimeError as e:
+			if 'out of memory' in str(e).lower():
+				print(f"Error: GPU out of memory with batch_size={batch_size}. Try a smaller --batch-size.")
+				cap.release()
+				sys.exit(1)
+			raise
+
+		# Extract reference coefficients if reference frame is in this batch
+		if ref_coeffs is None and first_fc <= ref_index < first_fc + n_in_batch:
+			ref_pos = ref_index - first_fc
+			ref_coeffs = [Yh[level][ref_pos:ref_pos+1].clone() for level in range(nlevels)]
+
+		if ref_coeffs is None:
+			# Haven't seen reference frame yet
+			for _ in range(n_in_batch):
+				phase_signals.append(np.zeros((nlevels, n_orient)))
+		else:
+			batch_phases = np.zeros((n_in_batch, nlevels, n_orient))
+			for level in range(nlevels):
+				# Yh[level] shape: (N, 1, 6, H, W, 2), last dim is real/imag
+				hp = Yh[level]
+				ref_hp = ref_coeffs[level]
+
+				c_real = hp[..., 0]
+				c_imag = hp[..., 1]
+				r_real = ref_hp[..., 0]
+				r_imag = ref_hp[..., 1]
+
+				# Conjugate multiply: (c + id)(a - ib) = (ca+db) + i(da-cb)
+				prod_real = c_real * r_real + c_imag * r_imag
+				prod_imag = c_imag * r_real - c_real * r_imag
+
+				phase_diff = torch.atan2(prod_imag, prod_real)
+				amp_sq = c_real * c_real + c_imag * c_imag
+
+				# Sum over spatial dims (H, W) -> (N, 1, 6)
+				weighted = (amp_sq * phase_diff).sum(dim=(-2, -1))
+				batch_phases[:, level, :] = weighted[:, 0, :].cpu().numpy()
+
+			for i in range(n_in_batch):
+				if first_fc + i < ref_index:
+					phase_signals.append(np.zeros((nlevels, n_orient)))
+				else:
+					phase_signals.append(batch_phases[i])
+
+		del batch_tensor, Yl, Yh
+
 	batch_frames = []
 
-	for fc in range(frame_count):
+	# Read until the video ends: the container's frame count can be wrong
+	while True:
 		ret, raw_frame = cap.read()
 		if not ret or raw_frame is None:
-			print(f"Warning: could not read frame {fc}, stopping at {frames_read} frames")
 			break
 		gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
 		if roi is not None:
 			rx, ry, rw, rh = roi
 			gray = gray[ry:ry+rh, rx:rx+rw]
-
 		batch_frames.append(gray.astype(np.float32))
-		frames_read += 1
 
-		if len(batch_frames) == batch_size or fc == frame_count - 1:
-			n_in_batch = len(batch_frames)
-			batch_start_fc = fc - n_in_batch + 1
-
-			batch_np = np.stack(batch_frames)[:, np.newaxis, :, :]
-			try:
-				batch_tensor = torch.from_numpy(batch_np).to(device)
-				Yl, Yh = xfm(batch_tensor)
-			except RuntimeError as e:
-				if 'out of memory' in str(e).lower():
-					print(f"Error: GPU out of memory with batch_size={batch_size}. Try a smaller --batch-size.")
-					cap.release()
-					sys.exit(1)
-				raise
-
-			# Extract reference coefficients if reference frame is in this batch
-			if ref_coeffs is None and ref_index >= batch_start_fc and ref_index <= fc:
-				ref_pos = ref_index - batch_start_fc
-				ref_coeffs = [Yh[level][ref_pos:ref_pos+1].clone() for level in range(nlevels)]
-
-			if ref_coeffs is None:
-				# Haven't seen reference frame yet
-				for _ in range(n_in_batch):
-					phase_signals.append(np.zeros((nlevels, n_orient)))
-			else:
-				batch_phases = np.zeros((n_in_batch, nlevels, n_orient))
-				for level in range(nlevels):
-					# Yh[level] shape: (N, 1, 6, H, W, 2), last dim is real/imag
-					hp = Yh[level]
-					ref_hp = ref_coeffs[level]
-
-					c_real = hp[..., 0]
-					c_imag = hp[..., 1]
-					r_real = ref_hp[..., 0]
-					r_imag = ref_hp[..., 1]
-
-					# Conjugate multiply: (c + id)(a - ib) = (ca+db) + i(da-cb)
-					prod_real = c_real * r_real + c_imag * r_imag
-					prod_imag = c_imag * r_real - c_real * r_imag
-
-					phase_diff = torch.atan2(prod_imag, prod_real)
-					amp_sq = c_real * c_real + c_imag * c_imag
-
-					# Sum over spatial dims (H, W) -> (N, 1, 6)
-					weighted = (amp_sq * phase_diff).sum(dim=(-2, -1))
-					batch_phases[:, level, :] = weighted[:, 0, :].cpu().numpy()
-
-				for i in range(n_in_batch):
-					if batch_start_fc + i < ref_index:
-						phase_signals.append(np.zeros((nlevels, n_orient)))
-					else:
-						phase_signals.append(batch_phases[i])
-
-			del batch_tensor, Yl, Yh
+		if len(batch_frames) == batch_size:
+			process_batch(batch_frames)
 			batch_frames = []
+			if len(phase_signals) >= last_report + progress_interval:
+				print_progress(len(phase_signals), frame_count, start_time)
+				last_report = len(phase_signals)
 
-			if frames_read >= last_report + progress_interval or fc == frame_count - 1:
-				elapsed = time.time() - start_time
-				rate = frames_read / elapsed if elapsed > 0 else 0
-				remaining = (frame_count - frames_read) / rate if rate > 0 else 0
-				print(f"Processing: {frames_read}/{frame_count} frames ({100 * frames_read // frame_count}%) | Elapsed: {format_duration(elapsed)} | ETA: {format_duration(remaining)}")
-				last_report = frames_read
+	if batch_frames:
+		process_batch(batch_frames)
 
 	cap.release()
+	warn_if_count_differs(frame_count, len(phase_signals))
 
 	if len(phase_signals) == 0:
 		print("Error: no frames could be read from video")
@@ -344,6 +362,10 @@ def main():
 	output_name = args.output
 	freq_low = args.freq_low
 	freq_high = args.freq_high
+	for flag, value in (('--freq-low', freq_low), ('--freq-high', freq_high)):
+		if value is not None and value <= 0:
+			print(f"Error: {flag} must be positive (got {value:g})")
+			sys.exit(1)
 	if freq_low is not None and freq_high is not None and freq_low >= freq_high:
 		print(f"Error: freq-low ({freq_low} Hz) must be less than freq-high ({freq_high} Hz)")
 		sys.exit(1)
@@ -416,6 +438,20 @@ def main():
 
 	print(f"frame_count: {frame_count}, frame_width: {frame_width}, frame_height: {frame_height}, fps: {fps}")
 
+	# Check the filter against the frame rate now, not after hours of processing
+	nyquist = fps / 2.0
+	if fps < 500:
+		print(f"Warning: at {fps:g} fps the audio can only hold frequencies up to {nyquist:g} Hz. "
+			"The Visual Microphone needs high-speed video. If the camera ran faster than the file "
+			"says (the MIT samples report about 30 fps but were shot at 2200), pass the real rate with --fps.")
+	max_cutoff = nyquist * 0.99
+	if freq_low is not None and freq_low >= max_cutoff:
+		print(f"Error: --freq-low ({freq_low:g} Hz) must be below {max_cutoff:.0f} Hz (99% of the Nyquist frequency at {fps:g} fps)")
+		cap.release()
+		sys.exit(1)
+	if freq_high is not None and freq_high > max_cutoff:
+		print(f"Note: --freq-high ({freq_high:g} Hz) is above 99% of the Nyquist frequency; using {max_cutoff:.0f} Hz")
+
 	min_dim = 2 ** nlevels
 
 	if roi is not None:
@@ -439,7 +475,7 @@ def main():
 
 	if freq_low is None and not args.no_filter:
 		default_low = default_freq_low(fps)
-		if freq_high is None or default_low < freq_high:
+		if default_low < max_cutoff and (freq_high is None or default_low < freq_high):
 			freq_low = default_low
 
 	if args.gpu:
@@ -467,7 +503,7 @@ def main():
 	else:
 		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low, freq_high, roi, args.biort, args.qshift, args.denoise)
 
-	save_wav(sound_data, output_name, int(fps))
+	save_wav(sound_data, output_name, round(fps))
 	print(f"Total time: {format_duration(time.time() - pipeline_start)}")
 
 

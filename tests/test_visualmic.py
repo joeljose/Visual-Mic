@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import pytest
 from scipy import signal
+from scipy.io import wavfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import visualmic
@@ -160,6 +161,18 @@ class TestDenoiseSpectral:
         assert power_at(out, 330) > 0.5 * power_at(tone, 330)
 
 
+class TestShortClips:
+    @pytest.mark.parametrize("frames", [2, 13, 27])
+    def test_bandpass_on_short_clip(self, frames):
+        """sosfiltfilt's default padding needs 28+ frames; shorter clips must still work (#15)."""
+        rng = np.random.RandomState(0)
+        result = visualmic.postprocess_phase_signals(
+            rng.randn(frames, 3, 6), fps=2200, freq_low=100, freq_high=800
+        )
+        assert result.shape == (frames,)
+        assert np.all(np.isfinite(result))
+
+
 class TestEstimateVram:
     def test_basic_arithmetic(self):
         result = visualmic.estimate_vram(16, 256, 256, 3)
@@ -230,6 +243,47 @@ class TestExtractAudio:
         )
         assert result.shape == (16,)
         assert np.all(np.isfinite(result))
+
+
+@pytest.fixture
+def tiny_video(tmp_path):
+    path = str(tmp_path / "tiny.avi")
+    _create_synthetic_video(path, num_frames=40, height=64, width=64)
+    return path
+
+
+def _run(*args):
+    return subprocess.run([sys.executable, 'visualmic.py', *args], capture_output=True, text=True)
+
+
+@pytest.mark.skipif(not HAS_DTCWT, reason="dtcwt not available")
+class TestFilterAndFpsChecks:
+    """#15: bad settings fail before any frame is processed."""
+
+    @pytest.mark.parametrize("flag", ['-fl', '-fh'])
+    def test_non_positive_cutoff(self, tiny_video, flag):
+        result = _run('-i', tiny_video, flag, '0')
+        assert result.returncode != 0
+        assert 'must be positive' in result.stdout
+        assert 'Processing' not in result.stdout
+
+    def test_freq_low_above_nyquist(self, tiny_video, tmp_path):
+        result = _run('-i', tiny_video, '--fps', '2200', '-fl', '1100', '-o', str(tmp_path / 'o.wav'))
+        assert result.returncode != 0
+        assert 'Nyquist' in result.stdout
+        assert 'Processing' not in result.stdout
+
+    def test_low_fps_warns(self, tiny_video, tmp_path):
+        result = _run('-i', tiny_video, '-o', str(tmp_path / 'o.wav'))
+        assert result.returncode == 0
+        assert '--fps' in result.stdout and 'high-speed video' in result.stdout
+
+    def test_sample_rate_is_rounded(self, tiny_video, tmp_path):
+        out = str(tmp_path / 'o.wav')
+        result = _run('-i', tiny_video, '--fps', '2199.7', '-o', out)
+        assert result.returncode == 0
+        rate, _ = wavfile.read(out)
+        assert rate == 2200
 
 
 class TestInputValidation:
