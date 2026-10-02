@@ -78,7 +78,6 @@ class TestExtractAudioGpu:
         cap = cv2.VideoCapture(video_path)
         result = visualmic.extract_audio_gpu(
             cap, 32, nlevels=3, n_orient=6,
-            ref_index=0,
             fps=30, batch_size=16
         )
         assert result.shape == (32,)
@@ -95,7 +94,6 @@ class TestExtractAudioGpu:
         cap = cv2.VideoCapture(video_path)
         result = visualmic.extract_audio_gpu(
             cap, reported, nlevels=3, n_orient=6,
-            ref_index=0,
             fps=2200, batch_size=16
         )
         assert result.shape == (40,)
@@ -108,7 +106,6 @@ class TestExtractAudioGpu:
         cap = cv2.VideoCapture(video_path)
         result = visualmic.extract_audio_gpu(
             cap, 16, nlevels=2, n_orient=6,
-            ref_index=0,
             fps=30, batch_size=8,
             biort='near_sym_a', qshift='qshift_a'
         )

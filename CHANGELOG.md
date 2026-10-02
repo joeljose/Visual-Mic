@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Phase is measured from each frame to the next and added up, instead of against the first frame. Measured against one frame, the phase wrapped by 2 pi once the surface drifted about half a wavelength. Synthetic test: 10 px of drift went from -20 dB to 15.9 dB SNR. MIT Chips2, default settings: SNR -3.8 dB to -2.9 dB, segSNR -3.2 dB to -1.5 dB; with `--denoise` segSNR is -1.1 dB, the same as MIT's published result ([#17](https://github.com/joeljose/Visual-Mic/issues/17)).
+
+### Removed
+- The `ref_index` parameter of `extract_audio` and `extract_audio_gpu`. There is no reference frame any more.
+
 ## [3.0.1] - 2026-10-02
 
 ### Fixed

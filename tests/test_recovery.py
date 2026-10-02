@@ -73,7 +73,7 @@ class SyntheticCap:
 def recover(rms_px, angle=0.0, drift_px=0.0, freq_low=100, reported=N):
     with contextlib.redirect_stdout(io.StringIO()):
         return visualmic.extract_audio(
-            SyntheticCap(rms_px, angle, drift_px), reported, 3, 6, 0, FPS, freq_low, None)
+            SyntheticCap(rms_px, angle, drift_px), reported, 3, 6, FPS, freq_low, None)
 
 
 def snr_db(out, highpass=100):
@@ -119,11 +119,12 @@ def test_default_settings_reject_drift():
     assert snr_db(recover(0.01, drift_px=0.3, freq_low=visualmic.default_freq_low(FPS)), highpass=None) >= 10
 
 
-# 3 px of drift wraps the phase measured against frame 0. Still about 3 dB
-# with the alignment fix; needs frame-to-frame phase differences.
-@pytest.mark.xfail(strict=True, reason="#17: phase wraps relative to frame 0")
-def test_large_drift_does_not_wrap():
-    assert snr_db(recover(0.01, drift_px=3.0)) >= 10
+# Large drift used to wrap the phase measured against frame 0 (#17): 3 px
+# gave 7.6 dB and 10 px gave -20 dB. Frame-to-frame phase changes, added
+# up, follow any drift: 15.7 and 15.9 dB.
+@pytest.mark.parametrize("drift_px", [3.0, 10.0])
+def test_large_drift_does_not_wrap(drift_px):
+    assert snr_db(recover(0.01, drift_px=drift_px)) >= 10
 
 
 # Containers often report the wrong frame count (#16). Every decodable frame

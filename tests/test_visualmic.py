@@ -222,7 +222,6 @@ class TestExtractAudio:
         cap = cv2.VideoCapture(video_path)
         result = visualmic.extract_audio(
             cap, 32, nlevels=3, n_orient=6,
-            ref_index=0,
             fps=30
         )
         assert result.shape == (32,)
@@ -238,7 +237,6 @@ class TestExtractAudio:
         cap = cv2.VideoCapture(video_path)
         result = visualmic.extract_audio(
             cap, 16, nlevels=2, n_orient=6,
-            ref_index=0,
             fps=30, biort='near_sym_a', qshift='qshift_a'
         )
         assert result.shape == (16,)
