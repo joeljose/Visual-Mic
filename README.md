@@ -660,15 +660,17 @@ The MIT dataset includes the sound that was played for each video (`*-input.wav`
 python scripts/eval_audio.py sound.wav --ref Chips2-2200Hz-Mary_MIDI-input.wav
 ```
 
-Chips2 (2200 fps, GPU):
+Scored on two MIT videos at 2200 fps, run on the GPU. The table has each video's SNR / segSNR (dB) / coherence:
 
-| Output | SNR (dB) | segSNR (dB) | Coherence |
-|---|---|---|---|
-| v2.0.0, default | −11.1 | −9.2 | 0.49 |
-| v3.0.1, default | −3.8 | −3.2 | 0.49 |
-| current, default | −2.9 | −1.5 | 0.49 |
-| current, `--denoise` | −2.9 | −1.1 | 0.49 |
-| MIT `recovered.wav` (denoised) | −4.0 | −1.1 | 0.60 |
+| Output | Chips2 (bag of chips) | Plant (leaves) |
+|---|---|---|
+| v2.0.0, default | −11.1 / −9.2 / 0.49 | −26.5 / −9.9 / 0.40 |
+| v3.0.1, default | −3.8 / −3.2 / 0.49 | |
+| current, default | −2.9 / −1.5 / 0.49 | −12.5 / −9.9 / 0.45 |
+| current, `--denoise` | −2.9 / −1.1 / 0.49 | −5.3 / −4.0 / 0.46 |
+| MIT `recovered.wav` (denoised) | −4.0 / −1.1 / 0.60 | −4.7 / −4.0 / 0.46 |
+
+On Plant, the current version with `--denoise` matches MIT's published result on segmental SNR and coherence. On Chips2 its coherence is still lower (0.49 against 0.60).
 
 ### Running Tests
 
