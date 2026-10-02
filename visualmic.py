@@ -161,10 +161,10 @@ def postprocess_phase_signals(phase_signals, fps, freq_low=None, freq_high=None,
 	return sound_data
 
 
-def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low=None, freq_high=None, roi=None, biort='near_sym_b', qshift='qshift_b', denoise=False):
+def extract_audio(cap, frame_count, nlevels, n_orient, fps, freq_low=None, freq_high=None, roi=None, biort='near_sym_b', qshift='qshift_b', denoise=False):
 	import dtcwt
 	transform = dtcwt.Transform2d(biort=biort, qshift=qshift)
-	ref_conj = None
+	prev_conj = None
 	phase_signals = []
 	progress_interval = max(1, frame_count // 10)
 	start_time = time.time()
@@ -179,22 +179,19 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low=
 			rx, ry, rw, rh = roi
 			gray = gray[ry:ry+rh, rx:rx+rw]
 
-		dtcwt_frame = transform.forward(gray, nlevels=nlevels)
+		highpasses = transform.forward(gray, nlevels=nlevels).highpasses
+		if prev_conj is None:
+			prev_conj = [np.conj(h) for h in highpasses]
 
-		if fc == ref_index:
-			ref_conj = [np.conj(dtcwt_frame.highpasses[level]) for level in range(nlevels)]
-
-		if ref_conj is None:
-			phase_signals.append(np.zeros((nlevels, n_orient)))
-			continue
-
+		# Phase change since the previous frame, weighted by amplitude squared
 		frame_phases = np.zeros((nlevels, n_orient))
 		for level in range(nlevels):
-			coeffs = dtcwt_frame.highpasses[level]
+			coeffs = highpasses[level]
 			amp = np.abs(coeffs)
-			phase_diff = np.angle(coeffs * ref_conj[level])
+			phase_diff = np.angle(coeffs * prev_conj[level])
 			frame_phases[level, :] = np.sum(amp * amp * phase_diff, axis=(0, 1))
 		phase_signals.append(frame_phases)
+		prev_conj = [np.conj(h) for h in highpasses]
 
 		if (fc + 1) % progress_interval == 0:
 			print_progress(fc + 1, frame_count, start_time)
@@ -207,11 +204,22 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low=
 		sys.exit(1)
 
 	frame_count = len(phase_signals)
-	phase_signals = np.array(phase_signals)
+	phase_signals = accumulate_phase(phase_signals)
 	elapsed = time.time() - start_time
 	print(f"Transform complete: {frame_count} frames in {format_duration(elapsed)}")
 
 	return postprocess_phase_signals(phase_signals, fps, freq_low, freq_high, denoise)
+
+
+def accumulate_phase(phase_changes):
+	"""Add up frame-to-frame phase changes into phase relative to the first frame.
+
+	Phase is only known modulo 2*pi. Measured against one fixed frame it wraps
+	once the surface drifts by about half a wavelength of a band. Between two
+	consecutive frames at audio frame rates the change is tiny, so it never
+	wraps, and the running sum follows any amount of drift (#17).
+	"""
+	return np.cumsum(np.array(phase_changes, dtype=np.float64), axis=0)
 
 
 def estimate_vram(batch_size, height, width, nlevels):
@@ -227,7 +235,7 @@ def estimate_vram(batch_size, height, width, nlevels):
 	return batch_vram + pytorch_overhead
 
 
-def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low=None, freq_high=None, roi=None, batch_size=16, biort='near_sym_b', qshift='qshift_b', denoise=False):
+def extract_audio_gpu(cap, frame_count, nlevels, n_orient, fps, freq_low=None, freq_high=None, roi=None, batch_size=16, biort='near_sym_b', qshift='qshift_b', denoise=False):
 	import torch
 	from pytorch_wavelets import DTCWTForward
 
@@ -235,16 +243,14 @@ def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_
 	xfm = DTCWTForward(J=nlevels, biort=biort, qshift=qshift).to(device)
 	print(f"GPU mode: {torch.cuda.get_device_name(0)}, batch_size={batch_size}")
 
-	ref_coeffs = None
+	prev = None
 	phase_signals = []
 	progress_interval = max(1, frame_count // 10)
 	last_report = 0
 	start_time = time.time()
 
 	def process_batch(frames):
-		nonlocal ref_coeffs
-		first_fc = len(phase_signals)
-		n_in_batch = len(frames)
+		nonlocal prev
 		batch_np = np.stack(frames)[:, np.newaxis, :, :]
 		try:
 			batch_tensor = torch.from_numpy(batch_np).to(device)
@@ -256,43 +262,34 @@ def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_
 				sys.exit(1)
 			raise
 
-		# Extract reference coefficients if reference frame is in this batch
-		if ref_coeffs is None and first_fc <= ref_index < first_fc + n_in_batch:
-			ref_pos = ref_index - first_fc
-			ref_coeffs = [Yh[level][ref_pos:ref_pos+1].clone() for level in range(nlevels)]
+		if prev is None:
+			prev = [Yh[level][:1] for level in range(nlevels)]
 
-		if ref_coeffs is None:
-			# Haven't seen reference frame yet
-			for _ in range(n_in_batch):
-				phase_signals.append(np.zeros((nlevels, n_orient)))
-		else:
-			batch_phases = np.zeros((n_in_batch, nlevels, n_orient))
-			for level in range(nlevels):
-				# Yh[level] shape: (N, 1, 6, H, W, 2), last dim is real/imag
-				hp = Yh[level]
-				ref_hp = ref_coeffs[level]
+		batch_phases = np.zeros((len(frames), nlevels, n_orient))
+		for level in range(nlevels):
+			# Yh[level] shape: (N, 1, 6, H, W, 2), last dim is real/imag.
+			# Each frame is compared with the one before it.
+			hp = Yh[level]
+			before = torch.cat([prev[level], hp[:-1]])
 
-				c_real = hp[..., 0]
-				c_imag = hp[..., 1]
-				r_real = ref_hp[..., 0]
-				r_imag = ref_hp[..., 1]
+			c_real = hp[..., 0]
+			c_imag = hp[..., 1]
+			r_real = before[..., 0]
+			r_imag = before[..., 1]
 
-				# Conjugate multiply: (c + id)(a - ib) = (ca+db) + i(da-cb)
-				prod_real = c_real * r_real + c_imag * r_imag
-				prod_imag = c_imag * r_real - c_real * r_imag
+			# Conjugate multiply: (c + id)(a - ib) = (ca+db) + i(da-cb)
+			prod_real = c_real * r_real + c_imag * r_imag
+			prod_imag = c_imag * r_real - c_real * r_imag
 
-				phase_diff = torch.atan2(prod_imag, prod_real)
-				amp_sq = c_real * c_real + c_imag * c_imag
+			phase_diff = torch.atan2(prod_imag, prod_real)
+			amp_sq = c_real * c_real + c_imag * c_imag
 
-				# Sum over spatial dims (H, W) -> (N, 1, 6)
-				weighted = (amp_sq * phase_diff).sum(dim=(-2, -1))
-				batch_phases[:, level, :] = weighted[:, 0, :].cpu().numpy()
+			# Sum over spatial dims (H, W) -> (N, 1, 6)
+			weighted = (amp_sq * phase_diff).sum(dim=(-2, -1))
+			batch_phases[:, level, :] = weighted[:, 0, :].cpu().numpy()
 
-			for i in range(n_in_batch):
-				if first_fc + i < ref_index:
-					phase_signals.append(np.zeros((nlevels, n_orient)))
-				else:
-					phase_signals.append(batch_phases[i])
+		phase_signals.extend(batch_phases)
+		prev = [Yh[level][-1:].clone() for level in range(nlevels)]
 
 		del batch_tensor, Yl, Yh
 
@@ -327,7 +324,7 @@ def extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_
 		sys.exit(1)
 
 	frame_count = len(phase_signals)
-	phase_signals = np.array(phase_signals)
+	phase_signals = accumulate_phase(phase_signals)
 	elapsed = time.time() - start_time
 	print(f"Transform complete: {frame_count} frames in {format_duration(elapsed)}")
 
@@ -471,7 +468,6 @@ def main():
 		print(f"Using ROI: x={rx}, y={ry}, w={rw}, h={rh}")
 
 	n_orient = 6
-	ref_index = 0
 
 	if freq_low is None and not args.no_filter:
 		default_low = default_freq_low(fps)
@@ -499,9 +495,9 @@ def main():
 				f"  - Remove --gpu to use CPU mode",
 				file=sys.stderr
 			)
-		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low, freq_high, roi, args.batch_size, args.biort, args.qshift, args.denoise)
+		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, fps, freq_low, freq_high, roi, args.batch_size, args.biort, args.qshift, args.denoise)
 	else:
-		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, freq_low, freq_high, roi, args.biort, args.qshift, args.denoise)
+		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, fps, freq_low, freq_high, roi, args.biort, args.qshift, args.denoise)
 
 	save_wav(sound_data, output_name, round(fps))
 	print(f"Total time: {format_duration(time.time() - pipeline_start)}")

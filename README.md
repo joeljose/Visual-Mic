@@ -181,14 +181,14 @@ This streaming architecture means GPU memory usage is proportional to `batch_siz
 
 ### GPU Phase Extraction
 
-The CPU path uses NumPy's complex number support (`np.angle(coeffs * ref_conj)`). The GPU path must handle complex arithmetic manually because `pytorch_wavelets` represents coefficients as real/imaginary pairs in the last dimension:
+The CPU path uses NumPy's complex number support (`np.angle(coeffs * prev_conj)`). The GPU path must handle complex arithmetic manually because `pytorch_wavelets` represents coefficients as real/imaginary pairs in the last dimension:
 
 ```
 Yh[level] shape: (B, 1, 6, H, W, 2)
                                    └── [0]=real, [1]=imag
 ```
 
-**Conjugate multiplication** (phase difference from reference):
+**Conjugate multiplication** (phase change since the previous frame):
 ```python
 # (c + id)(a - ib) = (ca + db) + i(da - cb)
 prod_real = c_real * r_real + c_imag * r_imag
@@ -204,7 +204,7 @@ weighted = (amp_sq * phase_diff).sum(dim=(-2, -1))  # sum over H, W
 
 This produces the same $A^2$-weighted spatial average as the CPU path, but computed entirely on GPU for the full batch at once.
 
-**Reference frame handling**: The reference frame's coefficients are extracted when the batch containing `ref_index` is processed, then retained as a small GPU tensor for subsequent batches. Frames before the reference produce zero phase signals.
+**Previous frame across batches**: each frame is compared with the frame before it. Inside a batch that is the previous entry; for the first frame of a batch it is the last frame of the batch before, kept as a small GPU tensor. The very first frame is compared with itself, so it contributes zero.
 
 ### Memory Management
 
@@ -212,7 +212,7 @@ This produces the same $A^2$-weighted spatial average as the CPU path, but compu
 
 **OOM handling**: If a CUDA out-of-memory error occurs during processing, the tool catches it and exits with an actionable error message rather than a raw PyTorch traceback.
 
-**CPU/GPU output differences**: The GPU path uses float32 (PyTorch/CUDA standard) while the CPU path uses float64. Combined with different DTCWT implementations (`pytorch_wavelets` vs `dtcwt`), outputs are similar but not bit-identical. Both produce valid audio recovery.
+**CPU/GPU output differences**: The GPU path uses float32 (PyTorch/CUDA standard) while the CPU path uses float64. Combined with different DTCWT implementations (`pytorch_wavelets` vs `dtcwt`), outputs are not bit-identical. On a synthetic clip with 4 px of drift, the two outputs correlate at 1.0.
 
 ### Performance
 
@@ -475,12 +475,12 @@ This is how `visualmic.py` implements the pipeline. The snippets are simplified 
 Frames are streamed from the video file. Each frame is read, transformed and discarded, so only one raw frame is in memory at a time, and a video of any length fits in memory. If an ROI is specified, each frame is cropped before the DTCWT decomposition, reducing computation and focusing on the vibrating object.
 
 ```python
-def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, ..., roi=None, denoise=False):
+def extract_audio(cap, frame_count, nlevels, n_orient, fps, ..., roi=None, denoise=False):
     transform = dtcwt.Transform2d()
-    ref_conj = None
+    prev_conj = None
     phase_signals = []
 
-    for fc in range(frame_count):
+    while True:                      # read until the video ends
         ret, raw_frame = cap.read()
         if not ret or raw_frame is None:
             break
@@ -488,20 +488,20 @@ def extract_audio(cap, frame_count, nlevels, n_orient, ref_index, fps, ..., roi=
         if roi is not None:
             rx, ry, rw, rh = roi
             gray = gray[ry:ry+rh, rx:rx+rw]
-        dtcwt_frame = transform.forward(gray, nlevels=nlevels)
-
-        if fc == ref_index:
-            ref_conj = [np.conj(dtcwt_frame.highpasses[level]) for level in range(nlevels)]
+        highpasses = transform.forward(gray, nlevels=nlevels).highpasses
+        if prev_conj is None:
+            prev_conj = [np.conj(h) for h in highpasses]
 
         frame_phases = np.zeros((nlevels, n_orient))
         for level in range(nlevels):
-            coeffs = dtcwt_frame.highpasses[level]
+            coeffs = highpasses[level]
             amp = np.abs(coeffs)
-            phase_diff = np.angle(coeffs * ref_conj[level])
+            phase_diff = np.angle(coeffs * prev_conj[level])   # change since the previous frame
             frame_phases[level, :] = np.sum(amp * amp * phase_diff, axis=(0, 1))
         phase_signals.append(frame_phases)
+        prev_conj = [np.conj(h) for h in highpasses]
 
-    phase_signals = np.array(phase_signals)  # shape: (frame_count, nlevels, n_orient)
+    phase_signals = accumulate_phase(phase_signals)  # running sum, shape (frames, nlevels, n_orient)
 ```
 
 Vectorized NumPy operations on entire 2D spatial slices:
@@ -509,11 +509,14 @@ Vectorized NumPy operations on entire 2D spatial slices:
 | Operation | Code | Corresponds to |
 |-----------|------|----------------|
 | Extract amplitude $A$ | `np.abs(coeffs)` | Step 2 of original |
-| Phase variation $\phi_v$ (wrapped to $[-\pi, \pi]$) | `np.angle(coeffs * ref_conj[level])` | Step 3 of original |
+| Phase change since the previous frame | `np.angle(coeffs * prev_conj[level])` | Step 3 of original (see below) |
 | $A^2$-weighted accumulation | `amp * amp * phase_diff` | Step 4 of original |
 | Spatial sum $\sum_{x,y}$ | `np.sum(..., axis=(0, 1))` | Step 4 of original |
+| Running sum over frames | `np.cumsum(..., axis=0)` | replaces the fixed reference frame |
 
-The conjugate multiplication `coeffs * conj(ref)` computes the phase difference directly: `angle(z * conj(w)) = angle(z) - angle(w)`, automatically wrapped to $[-\pi, \pi]$. This is more numerically stable than computing phases separately and subtracting.
+The conjugate multiplication `coeffs * conj(prev)` gives the phase difference directly: `angle(z * conj(w)) = angle(z) - angle(w)`, wrapped to $[-\pi, \pi]$. This is more numerically stable than computing the two phases and subtracting.
+
+**Why frame to frame, not against frame 0?** Phase is only known up to a multiple of $2\pi$. The original measures every frame against one reference frame, so once the surface or camera has drifted by about half a wavelength of a band, the phase difference jumps by $2\pi$ and the signal gets a step in it. The longer the clip, the more likely that is. Between two consecutive frames at 2200 fps the change is tiny and never wraps, and adding the changes up follows any amount of drift. In the synthetic test, 10 px of drift gave −20 dB SNR against frame 0 and 15.9 dB frame to frame. On Chips2, which has little drift, it still helped: −2.9 dB against −3.8 dB.
 
 **Result:** `phase_signals[fc, level, angle]` $= \Phi(\text{level}, \text{angle}, fc)$, one number per frame per sub-band.
 
@@ -581,7 +584,6 @@ The sample rate is the frame rate (from the video, or from `--fps`), rounded to 
 |-----------|---------|---------|
 | `nlevels` | 3 | Number of wavelet decomposition scales |
 | `n_orient` | 6 | Number of orientations per scale (fixed by DTCWT) |
-| `ref_index` | 0 | Reference frame index (first frame) |
 | `freq_low` | fps/40, within 20 to 100 Hz | High-pass cutoff |
 | `alpha`, `beta` | 2.0, 0.05 | Over-subtraction and gain floor of `--denoise` |
 | `biort` | `near_sym_b` | Biorthogonal filter for level 1 |
@@ -637,9 +639,7 @@ The vibration signal is present across all scales (the whole surface moves), but
 
 ## Future Work
 
-- **Multiprocessing across frames**: Frame processing is independent after the reference frame is computed. Reading frames remains sequential (VideoCapture limitation), but the DTCWT + phase extraction can be parallelized across CPU cores using batch processing with `multiprocessing.Pool`, giving ~Nx speedup on an N-core machine.
-
-- **Phase wrapping under drift**: phase is measured against the first frame, so it wraps once the surface drifts by about half a wavelength of a band ([#17](https://github.com/joeljose/Visual-Mic/issues/17)). Frame-to-frame differences plus a cumulative sum would avoid it.
+- **Multiprocessing across frames**: each frame only needs itself and the frame before it. Reading frames remains sequential (VideoCapture limitation), but the DTCWT + phase extraction can be parallelized across CPU cores using batch processing with `multiprocessing.Pool`, giving ~Nx speedup on an N-core machine.
 
 - **Closing the gap to the original**: on Chips2, coherence with the played sound is 0.49 against 0.60 for MIT's result. Candidates: more scales, a different motion estimate, or equalising the object's frequency response (original Section 4.3).
 
@@ -660,8 +660,9 @@ Chips2 (2200 fps, GPU):
 | Output | SNR (dB) | segSNR (dB) | Coherence |
 |---|---|---|---|
 | v2.0.0, default | −11.1 | −9.2 | 0.49 |
-| current, default | −3.8 | −3.2 | 0.49 |
-| current, `--denoise` | −2.9 | −1.3 | 0.49 |
+| v3.0.1, default | −3.8 | −3.2 | 0.49 |
+| current, default | −2.9 | −1.5 | 0.49 |
+| current, `--denoise` | −2.9 | −1.1 | 0.49 |
 | MIT `recovered.wav` (denoised) | −4.0 | −1.1 | 0.60 |
 
 ### Running Tests
@@ -687,7 +688,7 @@ All tests run inside Docker, so you need no local Python dependencies:
 - Full `extract_audio` pipeline on synthetic 256x256 video (shape, finiteness)
 - All CLI validation error paths
 
-**Recovery tests** (`tests/test_recovery.py`) move a texture by a known sub-pixel amount, following a 100 to 1000 Hz chirp, and check that the recovered signal matches it. They cover horizontal, vertical and diagonal motion at the motion sizes the paper measured (0.005 to 0.01 px), drift, wrong frame counts in the file, and the paper's rule that SNR rises 6 dB when the motion doubles. The open phase-wrapping bug (#17) is marked as an expected failure.
+**Recovery tests** (`tests/test_recovery.py`) move a texture by a known sub-pixel amount, following a 100 to 1000 Hz chirp, and check that the recovered signal matches it. They cover horizontal, vertical and diagonal motion at the motion sizes the paper measured (0.005 to 0.01 px), drift of up to 10 px, wrong frame counts in the file, and the paper's rule that SNR rises 6 dB when the motion doubles.
 
 `tests/test_eval_audio.py` checks that `scripts/eval_audio.py` finds a known delay, sign and SNR.
 
