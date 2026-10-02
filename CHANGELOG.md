@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `--device` for the PyTorch path: `cuda`, `cuda:N`, or `cpu` to run it without a GPU. CI now runs the PyTorch path on a CPU-only PyTorch build on every push, including a check that it agrees with the NumPy path ([#21](https://github.com/joeljose/Visual-Mic/issues/21), [#19](https://github.com/joeljose/Visual-Mic/issues/19)).
+
+### Changed
+- Errors and warnings go to stderr instead of stdout.
+- The output path is checked before processing starts, so an unwritable `-o` fails at once.
+- The PyTorch forward pass runs under `torch.inference_mode()`.
+- `estimate_vram` no longer takes the unused `nlevels` argument.
+
 ## [3.1.0] - 2026-10-02
 
 ### Changed

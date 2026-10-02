@@ -175,19 +175,19 @@ class TestShortClips:
 
 class TestEstimateVram:
     def test_basic_arithmetic(self):
-        result = visualmic.estimate_vram(16, 256, 256, 3)
+        result = visualmic.estimate_vram(16, 256, 256)
         # 16 * 256 * 256 * 4 * 15 + 300MB
         expected = 16 * 256 * 256 * 4 * 15 + 300 * 1024 * 1024
         assert result == expected
 
     def test_scales_with_batch_size(self):
-        small = visualmic.estimate_vram(8, 256, 256, 3)
-        large = visualmic.estimate_vram(32, 256, 256, 3)
+        small = visualmic.estimate_vram(8, 256, 256)
+        large = visualmic.estimate_vram(32, 256, 256)
         assert large > small
 
     def test_scales_with_resolution(self):
-        small = visualmic.estimate_vram(16, 256, 256, 3)
-        large = visualmic.estimate_vram(16, 512, 512, 3)
+        small = visualmic.estimate_vram(16, 256, 256)
+        large = visualmic.estimate_vram(16, 512, 512)
         assert large > small
 
 
@@ -262,19 +262,19 @@ class TestFilterAndFpsChecks:
     def test_non_positive_cutoff(self, tiny_video, flag):
         result = _run('-i', tiny_video, flag, '0')
         assert result.returncode != 0
-        assert 'must be positive' in result.stdout
+        assert 'must be positive' in result.stderr
         assert 'Processing' not in result.stdout
 
     def test_freq_low_above_nyquist(self, tiny_video, tmp_path):
         result = _run('-i', tiny_video, '--fps', '2200', '-fl', '1100', '-o', str(tmp_path / 'o.wav'))
         assert result.returncode != 0
-        assert 'Nyquist' in result.stdout
+        assert 'Nyquist' in result.stderr
         assert 'Processing' not in result.stdout
 
     def test_low_fps_warns(self, tiny_video, tmp_path):
         result = _run('-i', tiny_video, '-o', str(tmp_path / 'o.wav'))
         assert result.returncode == 0
-        assert '--fps' in result.stdout and 'high-speed video' in result.stdout
+        assert '--fps' in result.stderr and 'high-speed video' in result.stderr
 
     def test_sample_rate_is_rounded(self, tiny_video, tmp_path):
         out = str(tmp_path / 'o.wav')
@@ -282,6 +282,28 @@ class TestFilterAndFpsChecks:
         assert result.returncode == 0
         rate, _ = wavfile.read(out)
         assert rate == 2200
+
+
+@pytest.mark.skipif(not HAS_DTCWT, reason="dtcwt not available")
+class TestCliRobustness:
+    """#21: fail fast and keep diagnostics off stdout."""
+
+    def test_unwritable_output_fails_before_processing(self, tiny_video, tmp_path):
+        result = _run('-i', tiny_video, '-o', str(tmp_path / 'missing_dir' / 'o.wav'))
+        assert result.returncode != 0
+        assert 'cannot write output file' in result.stderr
+        assert 'Processing' not in result.stdout
+
+    def test_errors_go_to_stderr(self, tiny_video):
+        result = _run('-i', tiny_video, '-fl', '0')
+        assert 'Error' in result.stderr
+        assert 'Error' not in result.stdout
+
+    def test_output_check_leaves_no_file_behind(self, tiny_video, tmp_path):
+        out = tmp_path / 'o.wav'
+        result = _run('-i', tiny_video, '-o', str(out), '-fl', '0')
+        assert result.returncode != 0
+        assert not out.exists()
 
 
 class TestInputValidation:

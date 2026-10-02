@@ -132,6 +132,7 @@ python visualmic.py -i testvid.avi --biort near_sym_a --qshift qshift_a
 | `--roi` | whole frame | Region of interest as `x,y,w,h` |
 | `--gpu` | off | Use GPU-accelerated DTCWT (requires CUDA + pytorch_wavelets) |
 | `--batch-size` | 16 | Frames per GPU batch (GPU mode only) |
+| `--device` | `cuda` | PyTorch device for `--gpu`: `cuda`, `cuda:N`, or `cpu` to run the PyTorch path without a GPU |
 | `--nlevels` | 3 | Number of DTCWT decomposition levels |
 | `--biort` | `near_sym_b` | Biorthogonal wavelet filter for DTCWT level 1 |
 | `--qshift` | `qshift_b` | Quarter-shift wavelet filter for DTCWT levels 2+ |
@@ -148,6 +149,8 @@ When `--denoise` is specified, stationary noise is removed by spectral subtracti
 When `--fps` is specified, the given value is used as the audio sample rate instead of the frame rate reported by the video container. High-speed footage often needs it, because the container frame rate can be wrong. Below 500 fps the tool prints a warning, since that is usually the sign of a wrong rate.
 
 The filter settings are checked against the frame rate before any frame is processed. A cutoff of zero or less, or a `-fl` at or above the Nyquist frequency, stops the run with an error. Frames are read until the video ends, so a wrong frame count in the file doesn't drop or invent audio.
+
+Errors and warnings go to stderr. The output path is checked before any frame is processed, so a typo in `-o` fails at once instead of after the whole run.
 
 When `--roi` is specified, each frame is cropped to the given rectangle before the DTCWT decomposition. This reduces computation and can improve SNR by focusing on the vibrating object.
 
@@ -692,10 +695,13 @@ All tests run inside Docker, so you need no local Python dependencies:
 
 `tests/test_eval_audio.py` checks that `scripts/eval_audio.py` finds a known delay, sign and SNR.
 
-**GPU tests** (`tests/test_visualmic_gpu.py`) cover:
+**PyTorch path tests** (`tests/test_visualmic_gpu.py`) cover:
 - DTCWTForward shapes, finiteness, and custom filter selection
-- Full `extract_audio_gpu` pipeline on synthetic 256x256 video
-- All GPU tests skip automatically on systems without CUDA
+- Full `extract_audio_gpu` pipeline on synthetic video, including wrong frame counts
+- Agreement with the NumPy path on a clip with 4 px of drift (correlation above 0.999)
+- The `--gpu --device` command line, end to end
+
+They run on CUDA when a GPU is present and on the CPU otherwise, and skip only when PyTorch or `pytorch_wavelets` is missing. CI runs them on a CPU-only PyTorch build on every push.
 
 ### Versioning
 

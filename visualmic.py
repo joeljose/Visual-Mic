@@ -54,7 +54,7 @@ def print_progress(done, expected, start_time):
 
 def warn_if_count_differs(reported, decoded):
 	if decoded != reported:
-		print(f"Warning: the video reports {reported} frames, but {decoded} could be decoded. Using all {decoded}.")
+		print(f"Warning: the video reports {reported} frames, but {decoded} could be decoded. Using all {decoded}.", file=sys.stderr)
 
 
 def default_freq_low(fps):
@@ -112,7 +112,7 @@ def postprocess_phase_signals(phase_signals, fps, freq_low=None, freq_high=None,
 	if apply_filter:
 		if freq_low is not None and freq_high is not None:
 			if freq_low >= nyquist:
-				print(f"Warning: freq_low ({freq_low} Hz) >= Nyquist ({nyquist} Hz), skipping filter")
+				print(f"Warning: freq_low ({freq_low} Hz) >= Nyquist ({nyquist} Hz), skipping filter", file=sys.stderr)
 				apply_filter = False
 			else:
 				freq_high_clamped = min(freq_high, nyquist * 0.99)
@@ -120,7 +120,7 @@ def postprocess_phase_signals(phase_signals, fps, freq_low=None, freq_high=None,
 				print(f"Applying bandpass filter: {freq_low} to {freq_high_clamped:.0f} Hz")
 		elif freq_low is not None:
 			if freq_low >= nyquist:
-				print(f"Warning: freq_low ({freq_low} Hz) >= Nyquist ({nyquist} Hz), skipping filter")
+				print(f"Warning: freq_low ({freq_low} Hz) >= Nyquist ({nyquist} Hz), skipping filter", file=sys.stderr)
 				apply_filter = False
 			else:
 				sos = signal.butter(4, freq_low / nyquist, btype='highpass', output='sos')
@@ -153,7 +153,7 @@ def postprocess_phase_signals(phase_signals, fps, freq_low=None, freq_high=None,
 	p_min = np.min(sound_raw)
 	p_max = np.max(sound_raw)
 	if p_max == p_min:
-		print("Warning: no motion detected in video, output will be silent")
+		print("Warning: no motion detected in video, output will be silent", file=sys.stderr)
 		sound_data = np.zeros_like(sound_raw)
 	else:
 		sound_data = ((2 * sound_raw) - (p_min + p_max)) / (p_max - p_min)
@@ -200,7 +200,7 @@ def extract_audio(cap, frame_count, nlevels, n_orient, fps, freq_low=None, freq_
 	warn_if_count_differs(frame_count, len(phase_signals))
 
 	if len(phase_signals) == 0:
-		print("Error: no frames could be read from video")
+		print("Error: no frames could be read from video", file=sys.stderr)
 		sys.exit(1)
 
 	frame_count = len(phase_signals)
@@ -222,7 +222,7 @@ def accumulate_phase(phase_changes):
 	return np.cumsum(np.array(phase_changes, dtype=np.float64), axis=0)
 
 
-def estimate_vram(batch_size, height, width, nlevels):
+def estimate_vram(batch_size, height, width):
 	"""Estimate peak GPU VRAM usage in bytes.
 
 	Peak occurs during batched forward DTCWT: input frames plus
@@ -235,13 +235,14 @@ def estimate_vram(batch_size, height, width, nlevels):
 	return batch_vram + pytorch_overhead
 
 
-def extract_audio_gpu(cap, frame_count, nlevels, n_orient, fps, freq_low=None, freq_high=None, roi=None, batch_size=16, biort='near_sym_b', qshift='qshift_b', denoise=False):
+def extract_audio_gpu(cap, frame_count, nlevels, n_orient, fps, freq_low=None, freq_high=None, roi=None, batch_size=16, biort='near_sym_b', qshift='qshift_b', denoise=False, device='cuda'):
 	import torch
 	from pytorch_wavelets import DTCWTForward
 
-	device = torch.device('cuda')
+	device = torch.device(device)
 	xfm = DTCWTForward(J=nlevels, biort=biort, qshift=qshift).to(device)
-	print(f"GPU mode: {torch.cuda.get_device_name(0)}, batch_size={batch_size}")
+	name = torch.cuda.get_device_name(device) if device.type == 'cuda' else 'CPU'
+	print(f"PyTorch path on {device} ({name}), batch_size={batch_size}")
 
 	prev = None
 	phase_signals = []
@@ -249,6 +250,7 @@ def extract_audio_gpu(cap, frame_count, nlevels, n_orient, fps, freq_low=None, f
 	last_report = 0
 	start_time = time.time()
 
+	@torch.inference_mode()
 	def process_batch(frames):
 		nonlocal prev
 		batch_np = np.stack(frames)[:, np.newaxis, :, :]
@@ -257,7 +259,7 @@ def extract_audio_gpu(cap, frame_count, nlevels, n_orient, fps, freq_low=None, f
 			Yl, Yh = xfm(batch_tensor)
 		except RuntimeError as e:
 			if 'out of memory' in str(e).lower():
-				print(f"Error: GPU out of memory with batch_size={batch_size}. Try a smaller --batch-size.")
+				print(f"Error: GPU out of memory with batch_size={batch_size}. Try a smaller --batch-size.", file=sys.stderr)
 				cap.release()
 				sys.exit(1)
 			raise
@@ -320,7 +322,7 @@ def extract_audio_gpu(cap, frame_count, nlevels, n_orient, fps, freq_low=None, f
 	warn_if_count_differs(frame_count, len(phase_signals))
 
 	if len(phase_signals) == 0:
-		print("Error: no frames could be read from video")
+		print("Error: no frames could be read from video", file=sys.stderr)
 		sys.exit(1)
 
 	frame_count = len(phase_signals)
@@ -348,12 +350,12 @@ def main():
 	parser.add_argument('--roi', type=str, default=None, help='Region of interest as x,y,w,h (e.g. --roi 100,50,200,150)')
 	parser.add_argument('--gpu', action='store_true', help='Use GPU-accelerated DTCWT (requires CUDA and pytorch_wavelets)')
 	parser.add_argument('--batch-size', type=int, default=16, help='Frames per GPU batch (default: 16, GPU mode only)')
+	parser.add_argument('--device', default='cuda', help='PyTorch device for --gpu: cuda, cuda:N, or cpu to run the PyTorch path without a GPU (default: cuda)')
 	parser.add_argument('--nlevels', type=int, default=3, help='Number of DTCWT decomposition levels (default: 3)')
 	parser.add_argument('--biort', default='near_sym_b', help='DTCWT biorthogonal filter (default: near_sym_b)')
 	parser.add_argument('--qshift', default='qshift_b', help='DTCWT quarter-shift filter (default: qshift_b)')
 
 	args = parser.parse_args()
-	pipeline_start = time.time()
 
 	filename = args.input
 	output_name = args.output
@@ -361,14 +363,14 @@ def main():
 	freq_high = args.freq_high
 	for flag, value in (('--freq-low', freq_low), ('--freq-high', freq_high)):
 		if value is not None and value <= 0:
-			print(f"Error: {flag} must be positive (got {value:g})")
+			print(f"Error: {flag} must be positive (got {value:g})", file=sys.stderr)
 			sys.exit(1)
 	if freq_low is not None and freq_high is not None and freq_low >= freq_high:
-		print(f"Error: freq-low ({freq_low} Hz) must be less than freq-high ({freq_high} Hz)")
+		print(f"Error: freq-low ({freq_low} Hz) must be less than freq-high ({freq_high} Hz)", file=sys.stderr)
 		sys.exit(1)
 	nlevels = args.nlevels
 	if nlevels < 1:
-		print("Error: --nlevels must be >= 1")
+		print("Error: --nlevels must be >= 1", file=sys.stderr)
 		sys.exit(1)
 	roi = None
 	if args.roi is not None:
@@ -378,37 +380,59 @@ def main():
 				raise ValueError
 			roi = tuple(parts)
 		except ValueError:
-			print("Error: --roi must be four integers: x,y,w,h (e.g. --roi 100,50,200,150)")
+			print("Error: --roi must be four integers: x,y,w,h (e.g. --roi 100,50,200,150)", file=sys.stderr)
 			sys.exit(1)
 
 	if args.gpu:
 		try:
 			import torch
-			if not torch.cuda.is_available():
-				print("Error: --gpu requires CUDA but no GPU is available")
+			try:
+				device = torch.device(args.device)
+			except RuntimeError:
+				print(f"Error: --device '{args.device}' is not a valid PyTorch device (use cuda, cuda:N or cpu)", file=sys.stderr)
 				sys.exit(1)
+			if device.type == 'cuda':
+				if not torch.cuda.is_available():
+					print("Error: --gpu requires CUDA but no GPU is available (use --device cpu to run the PyTorch path on the CPU)", file=sys.stderr)
+					sys.exit(1)
+				if device.index is not None and device.index >= torch.cuda.device_count():
+					print(f"Error: --device {args.device} does not exist; this machine has {torch.cuda.device_count()} GPU(s)", file=sys.stderr)
+					sys.exit(1)
+				if device.index is None:
+					device = torch.device('cuda', torch.cuda.current_device())
 		except ImportError:
-			print("Error: --gpu requires PyTorch (pip install torch)")
+			print("Error: --gpu requires PyTorch (pip install torch)", file=sys.stderr)
 			sys.exit(1)
 		try:
 			import pytorch_wavelets  # noqa: F401
 		except ImportError:
-			print("Error: --gpu requires pytorch_wavelets (pip install git+https://github.com/fbcotter/pytorch_wavelets.git)")
+			print("Error: --gpu requires pytorch_wavelets (pip install git+https://github.com/fbcotter/pytorch_wavelets.git)", file=sys.stderr)
 			sys.exit(1)
 	else:
 		try:
 			import dtcwt  # noqa: F401
 		except ImportError:
-			print("Error: CPU mode requires dtcwt (pip install dtcwt)")
+			print("Error: CPU mode requires dtcwt (pip install dtcwt)", file=sys.stderr)
 			sys.exit(1)
 
+	# Check the output can be written now, not after an hour of processing
+	try:
+		existed = os.path.exists(output_name)
+		with open(output_name, 'ab'):
+			pass
+		if not existed:
+			os.remove(output_name)
+	except OSError as e:
+		print(f"Error: cannot write output file '{output_name}': {e.strerror}", file=sys.stderr)
+		sys.exit(1)
+
 	if not os.path.isfile(filename):
-		print(f"Error: file '{filename}' not found")
+		print(f"Error: file '{filename}' not found", file=sys.stderr)
 		sys.exit(1)
 
 	cap = cv2.VideoCapture(filename)
 	if not cap.isOpened():
-		print(f"Error: could not open '{filename}' as video")
+		print(f"Error: could not open '{filename}' as video", file=sys.stderr)
 		sys.exit(1)
 
 	fps = cap.get(cv2.CAP_PROP_FPS)
@@ -417,17 +441,17 @@ def main():
 	frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
 	if frame_count <= 0:
-		print("Error: video has no frames")
+		print("Error: video has no frames", file=sys.stderr)
 		cap.release()
 		sys.exit(1)
 
 	if fps <= 0:
-		print("Warning: could not determine FPS from video, defaulting to 30")
+		print("Warning: could not determine FPS from video, defaulting to 30", file=sys.stderr)
 		fps = 30
 
 	if args.fps is not None:
 		if args.fps <= 0:
-			print("Error: --fps must be positive")
+			print("Error: --fps must be positive", file=sys.stderr)
 			cap.release()
 			sys.exit(1)
 		print(f"Overriding video FPS ({fps}) with --fps {args.fps}")
@@ -440,29 +464,29 @@ def main():
 	if fps < 500:
 		print(f"Warning: at {fps:g} fps the audio can only hold frequencies up to {nyquist:g} Hz. "
 			"The Visual Microphone needs high-speed video. If the camera ran faster than the file "
-			"says (the MIT samples report about 30 fps but were shot at 2200), pass the real rate with --fps.")
+			"says (the MIT samples report about 30 fps but were shot at 2200), pass the real rate with --fps.", file=sys.stderr)
 	max_cutoff = nyquist * 0.99
 	if freq_low is not None and freq_low >= max_cutoff:
-		print(f"Error: --freq-low ({freq_low:g} Hz) must be below {max_cutoff:.0f} Hz (99% of the Nyquist frequency at {fps:g} fps)")
+		print(f"Error: --freq-low ({freq_low:g} Hz) must be below {max_cutoff:.0f} Hz (99% of the Nyquist frequency at {fps:g} fps)", file=sys.stderr)
 		cap.release()
 		sys.exit(1)
 	if freq_high is not None and freq_high > max_cutoff:
-		print(f"Note: --freq-high ({freq_high:g} Hz) is above 99% of the Nyquist frequency; using {max_cutoff:.0f} Hz")
+		print(f"Note: --freq-high ({freq_high:g} Hz) is above 99% of the Nyquist frequency; using {max_cutoff:.0f} Hz", file=sys.stderr)
 
 	min_dim = 2 ** nlevels
 
 	if roi is not None:
 		rx, ry, rw, rh = roi
 		if rx < 0 or ry < 0 or rw <= 0 or rh <= 0:
-			print("Error: ROI values must be non-negative and width/height must be positive")
+			print("Error: ROI values must be non-negative and width/height must be positive", file=sys.stderr)
 			cap.release()
 			sys.exit(1)
 		if rx + rw > frame_width or ry + rh > frame_height:
-			print(f"Error: ROI ({rx},{ry},{rw},{rh}) exceeds frame dimensions ({frame_width}x{frame_height})")
+			print(f"Error: ROI ({rx},{ry},{rw},{rh}) exceeds frame dimensions ({frame_width}x{frame_height})", file=sys.stderr)
 			cap.release()
 			sys.exit(1)
 		if rw < min_dim or rh < min_dim:
-			print(f"Error: ROI dimensions ({rw}x{rh}) too small for {nlevels}-level DTCWT (minimum {min_dim}x{min_dim})")
+			print(f"Error: ROI dimensions ({rw}x{rh}) too small for {nlevels}-level DTCWT (minimum {min_dim}x{min_dim})", file=sys.stderr)
 			cap.release()
 			sys.exit(1)
 		print(f"Using ROI: x={rx}, y={ry}, w={rw}, h={rh}")
@@ -474,28 +498,29 @@ def main():
 		if default_low < max_cutoff and (freq_high is None or default_low < freq_high):
 			freq_low = default_low
 
+	pipeline_start = time.time()
 	if args.gpu:
-		import torch
-		proc_h = roi[3] if roi else frame_height
-		proc_w = roi[2] if roi else frame_width
-		required = estimate_vram(args.batch_size, proc_h, proc_w, nlevels)
-		free, total = torch.cuda.mem_get_info(0)
-		required_gb = required / (1024 ** 3)
-		free_gb = free / (1024 ** 3)
-		total_gb = total / (1024 ** 3)
-		print(f"  Estimated VRAM needed: {required_gb:.1f} GB")
-		print(f"  GPU VRAM available:    {free_gb:.1f} GB / {total_gb:.1f} GB")
-		if required > free * 0.7:
-			print(
-				f"\nWarning: estimated VRAM ({required_gb:.1f} GB) exceeds 70% of "
-				f"available ({free_gb:.1f} GB).\n"
-				f"  Suggestions:\n"
-				f"  - Reduce --batch-size (current: {args.batch_size})\n"
-				f"  - Use --roi to crop to a smaller region\n"
-				f"  - Remove --gpu to use CPU mode",
-				file=sys.stderr
-			)
-		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, fps, freq_low, freq_high, roi, args.batch_size, args.biort, args.qshift, args.denoise)
+		if device.type == 'cuda':
+			proc_h = roi[3] if roi else frame_height
+			proc_w = roi[2] if roi else frame_width
+			required = estimate_vram(args.batch_size, proc_h, proc_w)
+			free, total = torch.cuda.mem_get_info(device)
+			required_gb = required / (1024 ** 3)
+			free_gb = free / (1024 ** 3)
+			total_gb = total / (1024 ** 3)
+			print(f"  Estimated VRAM needed: {required_gb:.1f} GB")
+			print(f"  GPU VRAM available:    {free_gb:.1f} GB / {total_gb:.1f} GB")
+			if required > free * 0.7:
+				print(
+					f"\nWarning: estimated VRAM ({required_gb:.1f} GB) exceeds 70% of "
+					f"available ({free_gb:.1f} GB).\n"
+					f"  Suggestions:\n"
+					f"  - Reduce --batch-size (current: {args.batch_size})\n"
+					f"  - Use --roi to crop to a smaller region\n"
+					f"  - Remove --gpu to use CPU mode",
+					file=sys.stderr
+				)
+		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, fps, freq_low, freq_high, roi, args.batch_size, args.biort, args.qshift, args.denoise, device)
 	else:
 		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, fps, freq_low, freq_high, roi, args.biort, args.qshift, args.denoise)
 

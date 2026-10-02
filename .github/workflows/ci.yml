@@ -29,3 +29,25 @@ jobs:
 
       - name: Verify --version
         run: docker run --rm visualmic-ci --version
+
+  # Runs the PyTorch path (extract_audio_gpu) on a CPU-only PyTorch build, so
+  # the GPU code is tested on every push without a GPU or the CUDA image.
+  pytorch-path-on-cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-gpu.txt -r requirements.txt -r requirements-dev.txt
+          SHA=$(grep -oP 'PYTORCH_WAVELETS_SHA=\K\w+' Dockerfile.gpu)
+          pip install --no-deps "https://github.com/fbcotter/pytorch_wavelets/archive/${SHA}.tar.gz"
+
+      - name: Tests (NumPy and PyTorch paths)
+        run: python -m pytest tests -q
+
