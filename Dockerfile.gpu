@@ -1,18 +1,20 @@
 # Slim Python base plus the torch wheel, which brings the CUDA libraries as
 # nvidia-* pip wheels. Several GB smaller than the pytorch/pytorch images.
 # The host needs the NVIDIA driver and Container Toolkit (docker run --gpus all).
-FROM python:3.11-slim
+FROM python:3.11.17-slim@sha256:45037981b62b34b44602584fccbc4d884d5f7dc92c7ee86bb38a698a79fe1e51
 
 # Fixed non-root user; for bind mounts run with --user "$(id -u):$(id -g)"
 RUN useradd -m -u 1000 app && install -d -o app -g app /app
 
 WORKDIR /app
 
-# pytorch_wavelets is pinned to a commit and installed without deps
-# (its deps are in requirements-gpu.txt), from a tarball so git isn't needed.
+# Hash-locked dependencies; regenerate requirements-gpu.lock as described in
+# CONTRIBUTING.md after changing requirements-gpu.txt or requirements-dev.txt.
+# pytorch_wavelets is pinned to a commit and installed without deps (its deps
+# are in the lock), from a tarball so git isn't needed.
 ARG PYTORCH_WAVELETS_SHA=9a0c507f04f43c5397e384bb6be8340169b2fd9a
-COPY requirements-gpu.txt requirements-dev.txt ./
-RUN pip install --no-cache-dir -r requirements-gpu.txt -r requirements-dev.txt && \
+COPY requirements-gpu.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements-gpu.lock && \
     pip install --no-cache-dir --no-deps \
         "https://github.com/fbcotter/pytorch_wavelets/archive/${PYTORCH_WAVELETS_SHA}.tar.gz"
 

@@ -4,10 +4,10 @@ name: GPU image
 on:
   push:
     branches: [main]
-    paths: [Dockerfile.gpu, requirements-gpu.txt, requirements-dev.txt, .github/workflows/gpu.yml]
+    paths: [Dockerfile.gpu, requirements-gpu.txt, requirements-gpu.lock, requirements-dev.txt, .github/workflows/gpu.yml]
   pull_request:
     branches: [main]
-    paths: [Dockerfile.gpu, requirements-gpu.txt, requirements-dev.txt, .github/workflows/gpu.yml]
+    paths: [Dockerfile.gpu, requirements-gpu.txt, requirements-gpu.lock, requirements-dev.txt, .github/workflows/gpu.yml]
 
 permissions:
   contents: read
@@ -16,7 +16,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Build GPU Docker image
         run: docker build -f Dockerfile.gpu -t visualmic-gpu-ci .

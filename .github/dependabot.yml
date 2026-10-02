@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    ignore:
+      # The base image is pinned to Python 3.11 on purpose: the lock files are
+      # generated for 3.11. Only patch releases and digest refreshes are proposed.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
