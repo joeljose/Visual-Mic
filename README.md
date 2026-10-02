@@ -162,6 +162,7 @@ When `--roi` is specified, each frame is cropped to the given rectangle before t
 - For MIT CSAIL videos, always use `--fps 2200` (the container reports ~30 fps incorrectly).
 - Use `--gpu` for large videos. The DTCWT forward pass takes most of the time.
 - If GPU runs out of memory, reduce `--batch-size`.
+- The audio can only hold frequencies up to half the frame rate. At 2200 fps that is 1100 Hz: enough for the pitch of a voice or a tune, not for clear consonants.
 
 ---
 
@@ -219,7 +220,7 @@ This produces the same $A^2$-weighted spatial average as the CPU path, but compu
 
 ### Performance
 
-Benchmarked on Chips2-2200Hz-Mary_MIDI-input.avi (704x400, 38,083 frames, 2200 fps) with an RTX 4050 (6 GB VRAM):
+Benchmarked on Chips2-2200Hz-Mary_MIDI-input.avi (704x400, 38,083 frames, 2200 fps) on a laptop with an RTX 4050 (6 GB VRAM):
 
 | Configuration | Time | Notes |
 |---|---|---|
@@ -227,6 +228,7 @@ Benchmarked on Chips2-2200Hz-Mary_MIDI-input.avi (704x400, 38,083 frames, 2200 f
 | GPU, `--nlevels 2` | 3m 49s | Fewer decomposition levels |
 | GPU, old filters | 3m 30s | `--biort near_sym_a --qshift qshift_a` |
 | GPU, with ROI | 2m 46s | `--roi 100,50,400,300` (smaller region) |
+| CPU, default settings | 24m 23s | one process, v3.1.0, Docker image; the machine was also running other jobs |
 
 **Hardware requirements (GPU path):**
 - NVIDIA GPU with CUDA 12.1+ support

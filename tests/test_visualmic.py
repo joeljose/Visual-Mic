@@ -74,10 +74,8 @@ class TestPostprocessPhaseSignals:
         result = visualmic.postprocess_phase_signals(
             phase_signals, fps=100
         )
-        # Constant input gives a constant sum
-        # Normalization maps constant to zero
         assert result.shape == (frame_count,)
-        assert np.all(np.isfinite(result))
+        assert np.all(result == 0)
 
     def test_normalization_range(self):
         """Output should be in [-1, 1]."""
@@ -101,36 +99,28 @@ class TestPostprocessPhaseSignals:
 
 
 class TestButterworthFilter:
-    def test_passband_preserved(self):
-        """Signal within passband should be preserved."""
-        frame_count = 200
-        fps = 1000
-        # 100 Hz signal, passband 50-200 Hz
-        t = np.arange(frame_count) / fps
-        phase_signals = np.tile(np.sin(2 * np.pi * 100 * t)[:, None, None], (1, 1, 6))
-        result = visualmic.postprocess_phase_signals(
-            phase_signals.copy(), fps=fps, freq_low=50, freq_high=200
-        )
-        assert np.all(np.isfinite(result))
-        # Should have non-zero energy (signal passed through)
-        assert np.std(result) > 0.01
+    @staticmethod
+    def _tone_powers(result, fps):
+        freqs = np.fft.rfftfreq(len(result), 1 / fps)
+        spectrum = np.abs(np.fft.rfft(result * np.hanning(len(result)))) ** 2
+        return spectrum[np.argmin(np.abs(freqs - 100))], spectrum[np.argmin(np.abs(freqs - 400))]
 
-    def test_stopband_attenuated(self):
-        """Signal outside passband should be attenuated."""
-        frame_count = 200
+    def test_bandpass_keeps_inband_and_removes_outband(self):
+        """A 100 Hz tone inside a 50-200 Hz band survives; an equally strong 400 Hz tone is cut."""
         fps = 1000
-        # 400 Hz signal, passband 50-200 Hz
-        t = np.arange(frame_count) / fps
-        phase_signals = np.tile(np.sin(2 * np.pi * 400 * t)[:, None, None], (1, 1, 6))
-        result = visualmic.postprocess_phase_signals(
+        t = np.arange(2000) / fps
+        tones = np.sin(2 * np.pi * 100 * t) + np.sin(2 * np.pi * 400 * t)
+        phase_signals = np.tile(tones[:, None, None], (1, 1, 6))
+
+        unfiltered = visualmic.postprocess_phase_signals(phase_signals.copy(), fps=fps)
+        filtered = visualmic.postprocess_phase_signals(
             phase_signals.copy(), fps=fps, freq_low=50, freq_high=200
         )
-        assert np.all(np.isfinite(result))
-        # Should have lower energy than unfiltered version
-        unfiltered = visualmic.postprocess_phase_signals(
-            phase_signals.copy(), fps=fps
-        )
-        assert np.std(result) < np.std(unfiltered)
+
+        in_before, out_before = self._tone_powers(unfiltered, fps)
+        in_after, out_after = self._tone_powers(filtered, fps)
+        assert 0.5 < out_before / in_before < 2      # equal tones without the filter
+        assert out_after / in_after < 1e-4           # 400 Hz down by more than 40 dB
 
 
 class TestDefaultFreqLow:
