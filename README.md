@@ -437,16 +437,16 @@ On a 6-core laptop, 4 workers process about 99 frames per second, and 6 workers 
 
 - Frames are grouped into batches of `--batch-size`, and the last, smaller batch is processed too.
 - Each batch goes through `DTCWTForward` in one call, inside `torch.inference_mode()`.
-- `pytorch_wavelets` stores each coefficient as a real and an imaginary part, so the conjugate product of [section 5](#5-measuring-motion-from-one-frame-to-the-next) is written out by hand. For the current coefficient $`c = a + ib`$ and the previous one $`c' = a' + ib'`$:
-
-  ```math
-  c\,\overline{c'} = (a a' + b b') + i\,(b a' - a b'),
-  \qquad
-  \Delta\phi = \operatorname{atan2}\!\left( b a' - a b',\ a a' + b b' \right).
-  ```
-
 - Within a batch, each frame is compared with the frame before it. The last frame of each batch stays on the device for the first frame of the next.
 - Only the 18 numbers per frame are copied back to the CPU.
+
+`pytorch_wavelets` stores each coefficient as a real and an imaginary part, so the conjugate product of [section 5](#5-measuring-motion-from-one-frame-to-the-next) is written out by hand. For the current coefficient $`c = a + ib`$ and the previous one $`c' = a' + ib'`$:
+
+```math
+c\,\overline{c'} = (a a' + b b') + i\,(b a' - a b'),
+\qquad
+\Delta\phi = \operatorname{atan2}\!\left( b a' - a b',\ a a' + b b' \right).
+```
 
 Before it starts, the PyTorch path estimates the GPU memory it needs: about 15 times the size of a float32 frame for each frame in the batch, plus $`300\,\text{MB}`$. For Chips2 at batch size 32 that is $`0.8\,\text{GB}`$. If the estimate is more than 70% of the free memory, it warns you. If the GPU runs out of memory anyway, it stops with a message instead of a traceback.
 
