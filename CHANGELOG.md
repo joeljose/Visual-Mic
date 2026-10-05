@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `--jobs`: the CPU path transforms frames in blocks in worker processes, and works in float32. Chips2 on a 6-core laptop: 24m 23s before, 5m 45s now (default 4 workers), with the same output (correlation 1.0 with the float64 result). More than about 4 workers made it slower again, since the transform is limited by memory bandwidth ([#22](https://github.com/joeljose/Visual-Mic/issues/22)).
 - `--device` for the PyTorch path: `cuda`, `cuda:N`, or `cpu` to run it without a GPU. CI now runs the PyTorch path on a CPU-only PyTorch build on every push, including a check that it agrees with the NumPy path ([#21](https://github.com/joeljose/Visual-Mic/issues/21), [#19](https://github.com/joeljose/Visual-Mic/issues/19)).
 
 ### Changed

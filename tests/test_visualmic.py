@@ -219,6 +219,15 @@ class TestExtractAudio:
         assert np.min(result) >= -1.0 - 1e-10
         assert np.max(result) <= 1.0 + 1e-10
 
+    def test_parallel_matches_serial(self, tmp_path):
+        """--jobs only splits the work: the output is the same as one process (#22)."""
+        video_path = str(tmp_path / "test.avi")
+        _create_synthetic_video(video_path, num_frames=70, height=64, width=64)
+        serial = visualmic.extract_audio(cv2.VideoCapture(video_path), 70, 3, 6, fps=2200, freq_low=55.0, jobs=1, block_size=8)
+        parallel = visualmic.extract_audio(cv2.VideoCapture(video_path), 70, 3, 6, fps=2200, freq_low=55.0, jobs=3, block_size=8)
+        assert serial.shape == (70,)
+        np.testing.assert_allclose(parallel, serial, atol=1e-12)
+
     def test_with_biort_qshift(self, tmp_path):
         """Verify custom filter selection works."""
         video_path = str(tmp_path / "test.avi")
@@ -330,6 +339,14 @@ class TestInputValidation:
         )
         assert result.returncode != 0
         assert 'four integers' in result.stderr + result.stdout
+
+    def test_invalid_jobs(self):
+        result = subprocess.run(
+            [sys.executable, 'visualmic.py', '-i', 'dummy.avi', '--jobs', '0'],
+            capture_output=True, text=True
+        )
+        assert result.returncode != 0
+        assert '--jobs' in result.stderr
 
     def test_invalid_nlevels(self):
         result = subprocess.run(

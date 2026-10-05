@@ -12,7 +12,9 @@ from Video", ACM Transactions on Graphics (SIGGRAPH 2014).
 __version__ = "3.1.0"
 
 import argparse
-import itertools
+import collections
+import concurrent.futures
+import multiprocessing
 import os
 import sys
 import time
@@ -161,16 +163,80 @@ def postprocess_phase_signals(phase_signals, fps, freq_low=None, freq_high=None,
 	return sound_data
 
 
-def extract_audio(cap, frame_count, nlevels, n_orient, fps, freq_low=None, freq_high=None, roi=None, biort='near_sym_b', qshift='qshift_b', denoise=False):
+def default_jobs():
+	"""Worker processes for the CPU path: the physical cores, at most 4.
+
+	sched_getaffinity counts the logical CPUs this process may use; with two
+	threads per core, half of that is roughly the physical cores. The
+	transform is limited by memory bandwidth, so more workers stop helping:
+	on a 6-core laptop, 4 workers gave 99 fps and 6 gave 87.
+	"""
+	# ponytail: cap measured on one machine; tune with --jobs elsewhere
+	return max(1, min(4, len(os.sched_getaffinity(0)) // 2))
+
+
+def block_phase_changes(frames, nlevels, biort, qshift):
+	"""Amplitude-weighted phase change of each frame from the frame before it.
+
+	frames[0] is only the "before" for frames[1] and gets no output row, so a
+	block of n + 1 frames gives n rows of shape (nlevels, 6). Runs in worker
+	processes, so it only takes and returns plain arrays.
+	"""
 	import dtcwt
 	transform = dtcwt.Transform2d(biort=biort, qshift=qshift)
-	prev_conj = None
-	phase_signals = []
+	# float32 frames keep dtcwt in float32/complex64: 2.3x faster than its
+	# float64 default, with coefficients equal to about 1e-6 (the GPU path is
+	# float32 too). The spatial sums are still done in float64.
+	frames = [f.astype(np.float32) for f in frames]
+	prev_conj = [np.conj(h) for h in transform.forward(frames[0], nlevels=nlevels).highpasses]
+	out = np.zeros((len(frames) - 1, nlevels, 6))
+	for i, gray in enumerate(frames[1:]):
+		highpasses = transform.forward(gray, nlevels=nlevels).highpasses
+		for level in range(nlevels):
+			coeffs = highpasses[level]
+			amp = np.abs(coeffs)
+			phase_diff = np.angle(coeffs * prev_conj[level])
+			out[i, level, :] = np.sum(amp * amp * phase_diff, axis=(0, 1), dtype=np.float64)
+		prev_conj = [np.conj(h) for h in highpasses]
+	return out
+
+
+def extract_audio(cap, frame_count, nlevels, n_orient, fps, freq_low=None, freq_high=None, roi=None, biort='near_sym_b', qshift='qshift_b', denoise=False, jobs=1, block_size=32):
+	"""CPU path. Frames are read here in order and transformed in blocks,
+	by `jobs` worker processes (or in this process when jobs is 1)."""
+	pool = None
+	if jobs > 1:
+		# spawn: fresh workers, safe with OpenCV's threads in this process
+		pool = concurrent.futures.ProcessPoolExecutor(jobs, mp_context=multiprocessing.get_context('spawn'))
+	pending = collections.deque()
+	changes = []
+	done = 0
+	last_report = 0
 	progress_interval = max(1, frame_count // 10)
 	start_time = time.time()
 
-	# Read until the video ends: the container's frame count can be wrong
-	for fc in itertools.count():
+	def collect():
+		nonlocal done, last_report
+		result = pending.popleft()
+		changes.append(result.result() if pool else result)
+		done += len(changes[-1])
+		if done >= last_report + progress_interval:
+			print_progress(done, frame_count, start_time)
+			last_report = done
+
+	def submit(block):
+		if pool:
+			pending.append(pool.submit(block_phase_changes, block, nlevels, biort, qshift))
+		else:
+			pending.append(block_phase_changes(block, nlevels, biort, qshift))
+		while len(pending) > 2 * jobs:  # bound the frames held in memory
+			collect()
+
+	# Read until the video ends: the container's frame count can be wrong.
+	# Each block starts with the last frame of the block before it; the very
+	# first frame is its own "before", so it contributes zero.
+	block = []
+	while True:
 		ret, raw_frame = cap.read()
 		if not ret or raw_frame is None:
 			break
@@ -178,35 +244,30 @@ def extract_audio(cap, frame_count, nlevels, n_orient, fps, freq_low=None, freq_
 		if roi is not None:
 			rx, ry, rw, rh = roi
 			gray = gray[ry:ry+rh, rx:rx+rw]
-
-		highpasses = transform.forward(gray, nlevels=nlevels).highpasses
-		if prev_conj is None:
-			prev_conj = [np.conj(h) for h in highpasses]
-
-		# Phase change since the previous frame, weighted by amplitude squared
-		frame_phases = np.zeros((nlevels, n_orient))
-		for level in range(nlevels):
-			coeffs = highpasses[level]
-			amp = np.abs(coeffs)
-			phase_diff = np.angle(coeffs * prev_conj[level])
-			frame_phases[level, :] = np.sum(amp * amp * phase_diff, axis=(0, 1))
-		phase_signals.append(frame_phases)
-		prev_conj = [np.conj(h) for h in highpasses]
-
-		if (fc + 1) % progress_interval == 0:
-			print_progress(fc + 1, frame_count, start_time)
+		if not block:
+			block.append(gray)
+		block.append(gray)
+		if len(block) == block_size + 1:
+			submit(block)
+			block = [block[-1]]
+	if len(block) > 1:
+		submit(block)
+	while pending:
+		collect()
+	if pool:
+		pool.shutdown()
 
 	cap.release()
-	warn_if_count_differs(frame_count, len(phase_signals))
+	decoded = sum(len(c) for c in changes)
+	warn_if_count_differs(frame_count, decoded)
 
-	if len(phase_signals) == 0:
+	if decoded == 0:
 		print("Error: no frames could be read from video", file=sys.stderr)
 		sys.exit(1)
 
-	frame_count = len(phase_signals)
-	phase_signals = accumulate_phase(phase_signals)
+	phase_signals = accumulate_phase(np.concatenate(changes))
 	elapsed = time.time() - start_time
-	print(f"Transform complete: {frame_count} frames in {format_duration(elapsed)}")
+	print(f"Transform complete: {decoded} frames in {format_duration(elapsed)}")
 
 	return postprocess_phase_signals(phase_signals, fps, freq_low, freq_high, denoise)
 
@@ -349,6 +410,7 @@ def main():
 	parser.add_argument('--fps', type=float, default=None, help='Override video frame rate (Hz) for audio output sample rate')
 	parser.add_argument('--roi', type=str, default=None, help='Region of interest as x,y,w,h (e.g. --roi 100,50,200,150)')
 	parser.add_argument('--gpu', action='store_true', help='Use GPU-accelerated DTCWT (requires CUDA and pytorch_wavelets)')
+	parser.add_argument('--jobs', type=int, default=None, help='Worker processes for the CPU path (default: physical cores, at most 4)')
 	parser.add_argument('--batch-size', type=int, default=16, help='Frames per GPU batch (default: 16, GPU mode only)')
 	parser.add_argument('--device', default='cuda', help='PyTorch device for --gpu: cuda, cuda:N, or cpu to run the PyTorch path without a GPU (default: cuda)')
 	parser.add_argument('--nlevels', type=int, default=3, help='Number of DTCWT decomposition levels (default: 3)')
@@ -367,6 +429,10 @@ def main():
 			sys.exit(1)
 	if freq_low is not None and freq_high is not None and freq_low >= freq_high:
 		print(f"Error: freq-low ({freq_low} Hz) must be less than freq-high ({freq_high} Hz)", file=sys.stderr)
+		sys.exit(1)
+	jobs = default_jobs() if args.jobs is None else args.jobs
+	if jobs < 1:
+		print("Error: --jobs must be >= 1", file=sys.stderr)
 		sys.exit(1)
 	nlevels = args.nlevels
 	if nlevels < 1:
@@ -522,7 +588,7 @@ def main():
 				)
 		sound_data = extract_audio_gpu(cap, frame_count, nlevels, n_orient, fps, freq_low, freq_high, roi, args.batch_size, args.biort, args.qshift, args.denoise, device)
 	else:
-		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, fps, freq_low, freq_high, roi, args.biort, args.qshift, args.denoise)
+		sound_data = extract_audio(cap, frame_count, nlevels, n_orient, fps, freq_low, freq_high, roi, args.biort, args.qshift, args.denoise, jobs)
 
 	save_wav(sound_data, output_name, round(fps))
 	print(f"Total time: {format_duration(time.time() - pipeline_start)}")
