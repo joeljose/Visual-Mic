@@ -133,6 +133,7 @@ python visualmic.py -i testvid.avi --biort near_sym_a --qshift qshift_a
 | `--gpu` | off | Use GPU-accelerated DTCWT (requires CUDA + pytorch_wavelets) |
 | `--batch-size` | 16 | Frames per GPU batch (GPU mode only) |
 | `--device` | `cuda` | PyTorch device for `--gpu`: `cuda`, `cuda:N`, or `cpu` to run the PyTorch path without a GPU |
+| `--jobs` | physical cores, at most 4 | Worker processes for the CPU path |
 | `--nlevels` | 3 | Number of DTCWT decomposition levels |
 | `--biort` | `near_sym_b` | Biorthogonal wavelet filter for DTCWT level 1 |
 | `--qshift` | `qshift_b` | Quarter-shift wavelet filter for DTCWT levels 2+ |
@@ -228,7 +229,8 @@ Benchmarked on Chips2-2200Hz-Mary_MIDI-input.avi (704x400, 38,083 frames, 2200 f
 | GPU, `--nlevels 2` | 3m 49s | Fewer decomposition levels |
 | GPU, old filters | 3m 30s | `--biort near_sym_a --qshift qshift_a` |
 | GPU, with ROI | 2m 46s | `--roi 100,50,400,300` (smaller region) |
-| CPU, default settings | 24m 23s | one process, v3.1.0, Docker image; the machine was also running other jobs |
+| CPU, default settings | 5m 45s | 4 worker processes (`--jobs` default), float32 |
+| CPU, v3.1.0 | 24m 23s | one process, float64 |
 
 **Hardware requirements (GPU path):**
 - NVIDIA GPU with CUDA 12.1+ support
@@ -477,7 +479,9 @@ This is how `visualmic.py` implements the pipeline. The snippets are simplified 
 
 ### Steps 1 to 3: Stream Video, ROI Crop, DTCWT, and Phase Extraction
 
-Frames are streamed from the video file. Each frame is read, transformed and discarded, so only one raw frame is in memory at a time, and a video of any length fits in memory. If an ROI is specified, each frame is cropped before the DTCWT decomposition, reducing computation and focusing on the vibrating object.
+Frames are streamed from the video file in order, then transformed in blocks of 32 by worker processes (`--jobs`). Each block also carries the last frame of the block before it, because every frame is compared with the one before it. At most two blocks per worker are in memory at a time, so a video of any length fits. The frames are converted to float32 first: `dtcwt` then works in float32 instead of float64, which is 2.3x faster, and the coefficients differ by about one part in a million.
+
+The snippet below shows the maths for one frame, as if it ran in a single loop. If an ROI is specified, each frame is cropped before the DTCWT decomposition, reducing computation and focusing on the vibrating object.
 
 ```python
 def extract_audio(cap, frame_count, nlevels, n_orient, fps, ..., roi=None, denoise=False):
@@ -643,8 +647,6 @@ The vibration signal is present across all scales (the whole surface moves), but
 ---
 
 ## Future Work
-
-- **Multiprocessing across frames**: each frame only needs itself and the frame before it. Reading frames remains sequential (VideoCapture limitation), but the DTCWT + phase extraction can be parallelized across CPU cores using batch processing with `multiprocessing.Pool`, giving ~Nx speedup on an N-core machine.
 
 - **Closing the gap to the original**: on Chips2, coherence with the played sound is 0.49 against 0.60 for MIT's result. Candidates: more scales, a different motion estimate, or equalising the object's frequency response (original Section 4.3).
 
