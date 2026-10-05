@@ -279,7 +279,7 @@ We now have 18 signals $`\Phi_{\ell,k}(t)`$, one per band. They follow the same 
 \mathbf{u}_k = (\cos\theta_k,\ \sin\theta_k) ,
 ```
 
-where $`\mathbf{d}(t)`$ is the displacement of the object and $`g_{\ell,k} > 0`$ is a gain that depends on the band. For the DTCWT, the directions that behave this way are
+where $`\mathbf{d}(t)`$ is the displacement of the object and $`g_{\ell,k}`$ is a positive gain that depends on the band. For the DTCWT, the directions that behave this way are
 
 ```math
 \theta_k \in \{\, 15^\circ,\ 45^\circ,\ 75^\circ,\ -75^\circ,\ -45^\circ,\ -15^\circ \,\} .
