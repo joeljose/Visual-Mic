@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-05
+
 ### Added
 - `--jobs`: the CPU path transforms frames in blocks in worker processes, and works in float32. Chips2 on a 6-core laptop: 24m 23s before, 5m 45s now (default 4 workers), with the same output (correlation 1.0 with the float64 result). More than about 4 workers made it slower again, since the transform is limited by memory bandwidth ([#22](https://github.com/joeljose/Visual-Mic/issues/22)).
 - `--device` for the PyTorch path: `cuda`, `cuda:N`, or `cpu` to run it without a GPU. CI now runs the PyTorch path on a CPU-only PyTorch build on every push, including a check that it agrees with the NumPy path ([#21](https://github.com/joeljose/Visual-Mic/issues/21), [#19](https://github.com/joeljose/Visual-Mic/issues/19)).
@@ -16,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The output path is checked before processing starts, so an unwritable `-o` fails at once.
 - The PyTorch forward pass runs under `torch.inference_mode()`.
 - `estimate_vram` no longer takes the unused `nlevels` argument.
+- CI uses `actions/checkout` v7.0.1 and `actions/setup-python` v7.0.0, proposed by Dependabot ([#35](https://github.com/joeljose/Visual-Mic/pull/35), [#36](https://github.com/joeljose/Visual-Mic/pull/36)).
 - `--gpu` runs no longer print the `pkg_resources is deprecated` warning from `pytorch_wavelets`.
 - The Docker images install from hash-locked `requirements.lock` and `requirements-gpu.lock`, the base image is pinned by digest (`python:3.11.17-slim`), and the GitHub Actions are pinned by commit. Dependabot proposes updates monthly. CONTRIBUTING.md explains how to regenerate the locks ([#23](https://github.com/joeljose/Visual-Mic/issues/23)).
 - The silence and filter unit tests now check what they claim: the filter test requires an out-of-band tone to drop by more than 40 dB, and fails if the filter is disabled ([#20](https://github.com/joeljose/Visual-Mic/issues/20)).
