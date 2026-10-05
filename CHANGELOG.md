@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The silence and filter unit tests now check what they claim: the filter test requires an out-of-band tone to drop by more than 40 dB, and fails if the filter is disabled ([#20](https://github.com/joeljose/Visual-Mic/issues/20)).
 - README: CPU timing for Chips2, and a tip on the audio bandwidth ([#24](https://github.com/joeljose/Visual-Mic/issues/24)).
 - README: evaluation results for the MIT Plant video next to Chips2.
+- README rewritten for newcomers: a quick start with the MIT data, and a ground-up explanation of the method with the maths written out (phase and the shift theorem, the DTCWT, frame-to-frame phase, amplitude weighting, combining orientations, filtering, spectral subtraction, the Nyquist limit, and the scoring metrics). The related-work table and references were checked against their sources, and three wrong citations were fixed.
 
 ## [3.1.0] - 2026-10-02
 
