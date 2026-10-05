@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Five formulas in the README showed "The following macros are not allowed: operatorname" on GitHub, whose math renderer rejects `\operatorname`. They use `\mathrm` now, and all 217 formulas render on github.com.
+
 ## [3.2.0] - 2026-10-05
 
 ### Added

@@ -250,9 +250,9 @@ Each sub-band has thousands of positions, and each gives its own noisy phase cha
 Not every position deserves the same trust. Picture a coefficient as an arrow of length $`A`$, with a little random noise added to its tip. A long arrow hardly turns when its tip is nudged. A short one can swing right round. To make that precise, let the noise $`n`$ added to $`c`$ be complex with average power $`\sigma^2`$. The phase error is then about
 
 ```math
-\delta\phi \approx \frac{\operatorname{Im}\!\left( n\, e^{-i\phi} \right)}{A},
+\delta\phi \approx \frac{\mathrm{Im}(n\, e^{-i\phi})}{A},
 \qquad
-\operatorname{Var}(\delta\phi) \approx \frac{\sigma^2}{2A^2} .
+\mathrm{Var}(\delta\phi) \approx \frac{\sigma^2}{2A^2} .
 ```
 
 The standard way to combine independent measurements with different noise is to weight each one by the inverse of its variance. Here that weight is proportional to $`A^2`$. So each band gets one number per frame,
@@ -336,7 +336,7 @@ At $`f_s = 2200\,\text{Hz}`$ this gives $`f_c = 55\,\text{Hz}`$. The code applie
 First cut the signal into short overlapping pieces and take the spectrum of each. This is the short-time Fourier transform $`X(m, f)`$, where $`m`$ numbers the pieces; we use pieces of $`256`$ samples. Then ask, at each frequency, what level is always there. Music comes and goes and a hum doesn't, so the median over all the pieces is a good estimate of the noise power:
 
 ```math
-\hat N(f) = \operatorname*{median}_{m} \; \lvert X(m, f) \rvert^{2} .
+\hat N(f) = \mathop{\mathrm{median}}_{m} \; \lvert X(m, f) \rvert^{2} .
 ```
 
 Next, scale each piece of the spectrum down according to how much of it is noise,
@@ -357,7 +357,7 @@ The signal is stretched to fill the range $`[-1, 1]`$,
 y(t) = \frac{2\, s(t) - \left( s_{\max} + s_{\min} \right)}{s_{\max} - s_{\min}} ,
 ```
 
-and saved as a 16-bit WAV file, $`\operatorname{round}\!\left(32767\, y(t)\right)`$. Each video frame becomes one audio sample, so the sample rate is the frame rate $`f_s`$, rounded to a whole number.
+and saved as a 16-bit WAV file, $`\mathrm{round}(32767\, y(t))`$. Each video frame becomes one audio sample, so the sample rate is the frame rate $`f_s`$, rounded to a whole number.
 
 That sets the highest frequency the sound can contain. A sampled signal can only hold frequencies up to half its sample rate, the **Nyquist frequency**:
 
@@ -445,7 +445,7 @@ On a 6-core laptop, 4 workers process about 99 frames per second, and 6 workers 
 ```math
 c\,\overline{c'} = (a a' + b b') + i\,(b a' - a b'),
 \qquad
-\Delta\phi = \operatorname{atan2}\!\left( b a' - a b',\ a a' + b b' \right).
+\Delta\phi = \mathrm{atan2}(b a' - a b',\ a a' + b b').
 ```
 
 Before it starts, the PyTorch path estimates the GPU memory it needs: about 15 times the size of a float32 frame for each frame in the batch, plus $`300\,\text{MB}`$. For Chips2 at batch size 32 that is $`0.8\,\text{GB}`$. If the estimate is more than 70% of the free memory, it warns you. If the GPU runs out of memory anyway, it stops with a message instead of a traceback.
