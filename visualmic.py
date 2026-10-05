@@ -18,11 +18,16 @@ import multiprocessing
 import os
 import sys
 import time
+import warnings
 
 from scipy import signal
 import numpy as np
 import cv2
 from scipy.io.wavfile import write
+
+# pytorch_wavelets imports pkg_resources, which warns on every run. The pin
+# setuptools<81 in requirements-gpu.txt keeps it working; the warning is noise.
+warnings.filterwarnings('ignore', message='pkg_resources is deprecated', category=UserWarning)
 
 
 def format_duration(seconds):

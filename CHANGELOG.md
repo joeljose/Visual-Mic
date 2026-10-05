@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The output path is checked before processing starts, so an unwritable `-o` fails at once.
 - The PyTorch forward pass runs under `torch.inference_mode()`.
 - `estimate_vram` no longer takes the unused `nlevels` argument.
+- `--gpu` runs no longer print the `pkg_resources is deprecated` warning from `pytorch_wavelets`.
 - The Docker images install from hash-locked `requirements.lock` and `requirements-gpu.lock`, the base image is pinned by digest (`python:3.11.17-slim`), and the GitHub Actions are pinned by commit. Dependabot proposes updates monthly. CONTRIBUTING.md explains how to regenerate the locks ([#23](https://github.com/joeljose/Visual-Mic/issues/23)).
 - The silence and filter unit tests now check what they claim: the filter test requires an out-of-band tone to drop by more than 40 dB, and fails if the filter is disabled ([#20](https://github.com/joeljose/Visual-Mic/issues/20)).
 - README: CPU timing for Chips2, and a tip on the audio bandwidth ([#24](https://github.com/joeljose/Visual-Mic/issues/24)).
